@@ -32,21 +32,21 @@ def is_skip(text: str) -> bool:
 def detect_meal(text: str) -> str | None:
     t = text.lower()
 
+    if "перекус" in t and "1" in t:
+    return "snack1"
+
+    if "перекус" in t and "2" in t:
+    return "snack2"
+
     if "завтрак" in t:
-        return "breakfast"
+    return "breakfast"
 
     if "обед" in t:
-        return "lunch"
+    return "lunch"
 
     if "ужин" in t:
-        return "dinner"
+    return "dinner"
 
-    if "перекус" in t:
-        if "2" in t:
-            return "snack2"
-        return "snack1"
-
-    return None
 
 
 
@@ -137,6 +137,7 @@ def parse_absolute_weight(text: str) -> Optional[float]:
         return round(val, 3)
 
     return None
+
 
 
 
