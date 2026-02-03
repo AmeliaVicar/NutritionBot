@@ -55,19 +55,20 @@ def parse_meal(text: str) -> Optional[str]:
 
 
 def late_message(meal: str, hour: int, minute: int) -> str | None:
-    # Перекус 1 — до 11:00 (после 11:00:00 уже поздно)
-    if meal == "snack1" and (hour > 11 or (hour == 11 and minute > 0)):
+    meal = meal.strip().lower()
+    total_minutes = hour * 60 + minute
+
+    if meal == "snack1" and total_minutes > 11 * 60:
         return "⚠️ Перекус 1 — до 11:00."
 
-    # Обед — до 14:00
-    if meal == "lunch" and (hour > 14 or (hour == 14 and minute > 0)):
+    if meal == "lunch" and total_minutes > 14 * 60:
         return "⚠️ Обед — до 14:00."
 
-    # Перекус 2 — до 16:00
-    if meal == "snack2" and (hour > 16 or (hour == 16 and minute > 0)):
+    if meal == "snack2" and total_minutes > 16 * 60:
         return "⚠️ Перекус 2 — до 16:00."
 
     return None
+    print(f"[DEBUG] meal={meal}, hour={hour}, minute={minute}")
 
 
 def parse_weight_delta(text: str) -> Optional[float]:
@@ -140,6 +141,7 @@ def parse_absolute_weight(text: str) -> Optional[float]:
         return round(val, 3)
 
     return None
+
 
 
 
