@@ -250,6 +250,8 @@ async def report_handler(m: Message):
 
     uid = m.from_user.id
     text = get_msg_text(m)
+    print("TEXT:", repr(text), "HAS_PHOTO:", bool(getattr(m, "photo", None)), "CAPTION:", repr(m.caption))
+
 
     # ищем строку пользователя
     row = sc.find_row_by_uid(uid)
@@ -345,3 +347,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
