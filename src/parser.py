@@ -111,19 +111,24 @@ def parse_weight_delta(text: str) -> Optional[float]:
 
 def parse_absolute_weight(text: str) -> Optional[float]:
     """
-    Возвращает АБСОЛЮТНЫЙ ВЕС в кг или None.
-    Допустимый диапазон: 30–200 кг.
+    Абсолютный вес в кг или None.
+    Поддержка: "Фамилия 49.5", "Фамилия вес 49.5"
+    Диапазон: 30–200
     """
 
-    t = (text or "").lower().replace(",", ".")
-
-    # если есть признаки дельты — это не абсолют
-    if any(x in t for x in ["+", "-", "минус", "плюс", "гр", "грам"]):
+    t = (text or "").lower().replace(",", ".").strip()
+    if not t:
         return None
 
-    if "вес" not in t:
+    # если это похоже на дельту — не трогаем
+    if any(x in t for x in ["+", "-", "минус", "плюс", "гр", "грам", " g", "г "]):
         return None
 
+    # если это сообщение про еду — не путать с весом
+    if any(w in t for w in ["завтрак", "обед", "ужин", "перекус"]):
+        return None
+
+    # берём первое число, но аккуратно
     m = re.search(r"\b(\d{2,3}(?:\.\d{1,3})?)\b", t)
     if not m:
         return None
@@ -134,5 +139,7 @@ def parse_absolute_weight(text: str) -> Optional[float]:
         return round(val, 3)
 
     return None
+
+
 
 
