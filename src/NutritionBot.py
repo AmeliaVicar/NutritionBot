@@ -1,5 +1,4 @@
 import asyncio
-
 import os
 import re
 from datetime import datetime
@@ -18,11 +17,16 @@ from aiogram.types import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import *
-from parser import *
+from parser import (
+    detect_meal,
+    is_skip,
+    is_excuse,
+    late_message,
+    parse_weight_delta,
+    parse_absolute_weight,
+)
 from sheets import Sheets, GREEN, RED
-
 from exporter import pdf_to_jpeg
-
 from state import (
     mark_active, mark_excused, get_sets, reset_day, save_mention,
     set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until
@@ -45,10 +49,12 @@ ASSETS_DIR = os.path.join(
     "assets",
     "menus"
 )
+
 print("🔥 NEW VERSION WITH SYRNIKI AND FIXED WEIGHT 🔥")
 
 # -------------------------
-# Таблица
+# Таблица (важно: совпадает с parser.MEAL_COL, но тут оставим отдельно)
+# A surname, B weight, C diff, D breakfast, E snack1, F lunch, G snack2, H dinner, ... J uid
 # -------------------------
 MEAL_TO_COL = {
     "breakfast": "D",
@@ -58,35 +64,62 @@ MEAL_TO_COL = {
     "dinner": "H",
 }
 
-
-MEAL_WORDS = {
-    "завтрак", "обед", "ужин",
-    "перекус", "перекус1", "перекус2",
-    "перекус 1", "перекус 2"
-}
-
 # -------------------------
 # Утилиты
 # -------------------------
 def get_msg_text(m: Message) -> str:
+    # важно: caption тоже читаем
     return (m.text or m.caption or "").strip()
 
-def _clean_word(w: str) -> str:
-    w = (w or "").strip().lower()
-    w = re.sub(r"^[^\wа-яё]+", "", w)
-    w = re.sub(r"[^\wа-яё]+$", "", w)
-    return w
+def looks_like_weight_or_delta(text: str) -> bool:
+    """
+    Чтобы не терять сообщения типа:
+    "49.7" или "-0.3" или "минус 300"
+    """
+    t = (text or "").lower().replace(",", ".").strip()
+    if not t:
+        return False
 
-def extract_surname_and_optional_name(text: str) -> tuple[str, str]:
-    parts = re.sub(r"\s+", " ", text.strip()).split(" ")
-    surname = _clean_word(parts[0]) if parts else ""
-    name = _clean_word(parts[1]) if len(parts) > 1 else ""
-    if name in MEAL_WORDS:
-        name = ""
-    return surname, name
+    # если парсер уже видит — отлично
+    if parse_weight_delta(t) is not None:
+        return True
+    if parse_absolute_weight(t) is not None:
+        return True
+
+    # запасной вариант: просто число 2-3 знака (49 / 49.7)
+    if re.fullmatch(r"\d{2,3}(\.\d{1,3})?", t):
+        return True
+
+    return False
+
+def message_is_report(text: str) -> bool:
+    """
+    Пропускаем:
+    - еду
+    - вес/разницу
+    - "без отчётов"/отмазки
+    """
+    if not text or text.startswith("/"):
+        return False
+
+    t = text.lower()
+
+    # отмазка
+    if is_excuse(t):
+        return True
+
+    # еда
+    if any(w in t for w in ["завтрак", "обед", "ужин", "перекус"]):
+        return True
+
+    # вес/дельта (в том числе "49.7" без слова "вес")
+    if looks_like_weight_or_delta(text):
+        return True
+
+    return False
 
 # -------------------------
-# КНОПКИ
+# КНОПКИ (тексты НЕ ТРОГАЮ)
 # -------------------------
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[
@@ -130,10 +163,11 @@ def find_asset(filename: str) -> str | None:
     return path if os.path.exists(path) else None
 
 # -------------------------
-# КОМАНДЫ / КНОПКИ
+# /start + кнопки
 # -------------------------
 @dp.message(F.text == "/start")
 async def start(m: Message):
+    print("CHAT_ID =", m.chat.id)
     await m.answer("Ок, я на связи. Выбирай 👇", reply_markup=MAIN_KEYBOARD)
 
 @dp.message(F.text == "📌 Правила питания")
@@ -200,152 +234,243 @@ async def report_rules(m: Message):
         reply_markup=MAIN_KEYBOARD
     )
 
-
 @dp.callback_query(F.data.startswith("menu:"))
 async def menu_pick(cb: CallbackQuery):
     key = cb.data.split(":", 1)[1]
-    files = MENU_FILES.get(key)
+    fname = MENU_FILES.get(key)
 
-    if not files:
+    if not fname:
         await cb.answer("Меню не найдено", show_alert=True)
         return
 
-    if isinstance(files, str):
-        files = [files]
+    path = find_asset(fname)
+    if not path:
+        await cb.message.answer(f"Файл не найден: {fname}")
+        await cb.answer()
+        return
 
-    for fname in files:
-        path = find_asset(fname)
-        if not path:
-            await cb.message.answer(f"Файл не найден: {fname}")
-            continue
-
-        await cb.message.answer_photo(
-            FSInputFile(path),
-            caption=f"📋 Меню: {key}",
-            reply_markup=MAIN_KEYBOARD
-        )
-
+    await cb.message.answer_photo(
+        FSInputFile(path),
+        caption=f"📋 Меню: {key}",
+        reply_markup=MAIN_KEYBOARD
+    )
     await cb.answer()
 
-
 # -------------------------
-# ОТЧЁТНЫЙ HANDLER
+# Главный хендлер отчётов (текст + подписи к фото)
 # -------------------------
-def message_is_report(text: str) -> bool:
-    if not text or text.startswith("/"):
-        return False
-    return any(w in text.lower() for w in [
-        "завтрак", "обед", "ужин",
-        "перекус", "вес", "минус", "плюс", "не будет", "без"
-    ])
-
-
-@dp.message(
-    (F.text | F.caption)
-    & F.func(lambda m: message_is_report(get_msg_text(m)))
-)
+@dp.message((F.text | F.caption))
 async def report_handler(m: Message):
     if not m.from_user:
         return
 
-    uid = m.from_user.id
     text = get_msg_text(m)
-    print("TEXT:", repr(text), "HAS_PHOTO:", bool(getattr(m, "photo", None)), "CAPTION:", repr(m.caption))
+    if not message_is_report(text):
+        return
 
+    uid = m.from_user.id
+    now = datetime.now(tz)
+    hour, minute = now.hour, now.minute
 
-    # ищем строку пользователя
+    # mentions для пингов
+    if m.from_user.username:
+        mention = "@" + m.from_user.username
+    else:
+        safe_name = (m.from_user.full_name or "участник").replace("<", "").replace(">", "")
+        mention = f'<a href="tg://user?id={uid}">{safe_name}</a>'
+    save_mention(uid, mention)
+
+    # EXCUSE
+    if is_excuse(text):
+        until_iso = parse_until_date(text)
+        if until_iso:
+            set_excused_until(uid, until_iso)
+            await m.reply(f"Ок, принял. До <b>{until_iso}</b> не буду ждать отчёты ✅")
+        else:
+            mark_excused(uid)
+            await m.reply("Ок, принял. Сегодня отмечу зелёным ✅")
+        return
+
+    # строка по UID
     row = sc.find_row_by_uid(uid)
     if row is None:
-        return  # пока без автодобавления
+        return
 
     # -------- ВЕС --------
     delta = parse_weight_delta(text)
     abs_w = parse_absolute_weight(text)
 
-    # 1️⃣ Абсолютный вес
+    # Абсолютный
     if abs_w is not None:
         prev_raw = sc.get_cell(f"B{row}")
         sc.write(row, "B", abs_w)
 
         try:
-            prev = float(prev_raw)
+            prev = float(str(prev_raw).replace(",", "."))
             diff = round(abs_w - prev, 3)
-
-            # защита от бреда
             if abs(diff) <= 5:
                 sc.write(row, "C", diff)
             else:
                 sc.write(row, "C", "")
-        except:
+        except Exception:
             sc.write(row, "C", "")
 
-    # 2️⃣ Разница веса
+        mark_active(uid)
+
+    # Дельта
     elif delta is not None:
         prev_raw = sc.get_cell(f"B{row}")
-
         try:
-            prev = float(prev_raw)
-        except:
-            return  # ❌ если нет старого веса — НИЧЕГО не делаем
+            prev = float(str(prev_raw).replace(",", "."))
+        except Exception:
+            # нет прошлого веса — не пытаемся “считать из воздуха”
+            return
 
         new_weight = round(prev + delta, 3)
-
-        # 🔒 финальная защита
         if not (30 <= new_weight <= 200):
             return
 
         sc.write(row, "B", new_weight)
         sc.write(row, "C", delta)
+        mark_active(uid)
 
     # -------- ЕДА --------
-    meal = detect_meal(text)
+    meal = detect_meal(text, hour=hour)
     if meal and meal in MEAL_TO_COL:
         col = MEAL_TO_COL[meal]
-        mark = "-" if is_skip(text) else "+"
+        skipped = is_skip(text)
+        mark = "-" if skipped else "+"
         sc.write(row, col, mark)
+        mark_active(uid)
 
+        # late ping только если это "+"
+        if not skipped:
+            msg = late_message(meal, hour, minute)
+            if msg:
+                await m.reply(msg)
 
 # -------------------------
-# ПИНГ ПО ОБЕДУ (ИСПРАВЛЕН)
+# Отчёт: красим и отправляем
+# -------------------------
+async def report():
+    cleanup_expired_excused_until()
+    _excused, _active, _mentions, _excused_until = get_sets()
+    rows = sc.rows()
+
+    # ВАЖНО: мы НЕ “выбеливаем” таблицу. Красим только то, что нужно.
+    # Индексы: A0 B1 C2 D3 E4 F5 G6 H7 ... J9
+    MEAL_IDX = {"D": 3, "E": 4, "F": 5, "G": 6, "H": 7}
+    MAIN_COLS = ["D", "F", "H"]  # завтрак/обед/ужин (как у тебя в таблице)
+
+    for i, r in enumerate(rows, start=2):
+        # UID в J
+        if len(r) <= 9 or not str(r[9]).strip():
+            continue
+
+        uid = int(str(r[9]).strip())
+
+        # зелёный: excused
+        if is_excused_today(uid):
+            sc.paint_row(i, GREEN)
+            continue
+
+        def cell_val(letter: str) -> str:
+            idx = MEAL_IDX[letter]
+            return str(r[idx]).strip() if len(r) > idx else ""
+
+        vals = [cell_val("D"), cell_val("E"), cell_val("F"), cell_val("G"), cell_val("H")]
+        all_empty = all(v == "" for v in vals)
+
+        # красный: вообще ничего по еде
+        if all_empty:
+            sc.paint_row(i, RED)
+
+        # красные ячейки по основным приёмам если пусто
+        for col_letter in MAIN_COLS:
+            if cell_val(col_letter) == "":
+                sc.paint_cell(i, col_letter, RED)
+
+    jpg_path = pdf_to_jpeg(sc.export_pdf())
+    await bot.send_photo(TELEGRAM_CHAT_ID, FSInputFile(jpg_path), caption="Отчёт за день")
+
+# -------------------------
+# Пинг по обеду: только тем, у кого реально пусто
 # -------------------------
 async def lunch_ping():
     cleanup_expired_excused_until()
     rows = sc.rows()
-    _, _, mentions, _ = get_sets()
+    _excused, _active, mentions, _excused_until = get_sets()
 
     missing = []
     for i, r in enumerate(rows, start=2):
-        if len(r) < 10 or not r[9]:
+        if len(r) <= 9 or not str(r[9]).strip():
             continue
-        uid = int(r[9])
+
+        uid = int(str(r[9]).strip())
         if is_excused_today(uid):
             continue
-        lunch = str(r[5]).strip()
-        if lunch == "":
+
+        # lunch = колонка F = индекс 5
+        lunch_val = str(r[5]).strip() if len(r) > 5 else ""
+        if lunch_val == "":
             missing.append(uid)
 
     if not missing:
         return
 
-    text = "⚠️ <b>Не вижу отчёт по обеду</b>\n\n" + "\n".join(
-        mentions.get(str(uid), f'<a href="tg://user?id={uid}">участник</a>')
-        for uid in missing
+    tags = [mentions.get(str(uid), f'<a href="tg://user?id={uid}">участник</a>') for uid in missing]
+    text = (
+        "⚠️ <b>Не вижу отчёт по обеду</b>\n"
+        "Пожалуйста, отправьте отчёт по обеду 👇\n\n" +
+        "\n".join(tags)
     )
     await bot.send_message(TELEGRAM_CHAT_ID, text)
 
 # -------------------------
-# ЗАПУСК
+# Reset: в 21:50 (как ты просила)
+# -------------------------
+async def daily_reset():
+    reset_day()
+
+# -------------------------
+# Запуск
 # -------------------------
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
 
     scheduler = AsyncIOScheduler(timezone=tz)
-    scheduler.add_job(lunch_ping, "cron", hour=12, minute=30)
+
+    # Пинг по обеду (как у тебя было)
+    scheduler.add_job(
+        lunch_ping, "cron",
+        hour=12, minute=30,
+        id="lunch_ping",
+        replace_existing=True
+    )
+
+    # Отчёт вечером: отправляем ДО ресета
+    scheduler.add_job(
+        report, "cron",
+        hour=21, minute=45,
+        id="daily_report",
+        replace_existing=True
+    )
+
+    # Сброс в 21:50
+    scheduler.add_job(
+        daily_reset, "cron",
+        hour=21, minute=50,
+        id="daily_reset",
+        replace_existing=True
+    )
+
     scheduler.start()
+    print("Scheduler started.")
+    print("Next lunch ping:", scheduler.get_job("lunch_ping").next_run_time)
+    print("Next report:", scheduler.get_job("daily_report").next_run_time)
+    print("Next reset:", scheduler.get_job("daily_reset").next_run_time)
 
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
