@@ -1,6 +1,9 @@
 import re
 from typing import Optional
 
+# -------------------------
+# Приёмы пищи → колонка
+# -------------------------
 MEAL_COL = {
     "breakfast": "D",
     "snack1": "E",
@@ -9,124 +12,143 @@ MEAL_COL = {
     "dinner": "H",
 }
 
-SKIP_WORDS = ["не будет", "нет", "пропуск", "пропущ", "минус"]
-
+# -------------------------
+# Слова
+# -------------------------
 EXCUSE_WORDS = [
-    "без отчётов", "без отчетов", "без фото", "фото не будет",
+    "без отчетов", "без отчётов", "без фото", "фото не будет",
     "уехал", "уехала", "заболел", "заболела", "болею"
 ]
 
-def normalize(t):
-    return t.lower().strip()
+SKIP_PHRASES = [
+    "не будет",
+    "без ",
+    "пропуск",
+    "пропущ",
+    "пропускаю",
+]
 
-def is_excuse(text):
+# -------------------------
+# Утилиты
+# -------------------------
+def normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower().strip())
+
+
+def is_excuse(text: str) -> bool:
     t = normalize(text)
     return any(w in t for w in EXCUSE_WORDS)
 
+
 def is_skip(text: str) -> bool:
-    t = text.lower()
-    return any(k in t for k in [
-        "без ", "не будет", "не буду", "пропуск", "пропущу", "пропущен", "пропускаю", "минус", "не"
-    ])
+    t = normalize(text)
+    return any(p in t for p in SKIP_PHRASES)
 
-def detect_meal(text: str) -> str | None:
-    t = text.lower()
 
-    if "перекус" in t and "1" in t:
-        return "snack1"
+# -------------------------
+# Приём пищи
+# -------------------------
+def detect_meal(text: str, hour: int | None = None) -> Optional[str]:
+    """
+    Возвращает: breakfast | snack1 | lunch | snack2 | dinner
+    """
+    t = normalize(text)
 
-    if "перекус" in t and "2" in t:
-        return "snack2"
-
+    # Явные
     if "завтрак" in t:
         return "breakfast"
-
     if "обед" in t:
         return "lunch"
-
     if "ужин" in t:
         return "dinner"
 
+    # Перекусы
+    if "перекус" in t:
+        if "2" in t or "втор" in t:
+            return "snack2"
+        if "1" in t or "перв" in t:
+            return "snack1"
 
-
-
-def late_message(meal: str, hour: int, minute: int) -> str | None:
-    meal = meal.strip().lower()
-    total_minutes = hour * 60 + minute
-
-    if meal == "snack1" and total_minutes > 11 * 60:
-        return "⚠️ Перекус 1 — до 11:00."
-
-    if meal == "lunch" and total_minutes > 14 * 60:
-        return "⚠️ Обед — до 14:00."
-
-    if meal == "snack2" and total_minutes > 16 * 60:
-        return "⚠️ Перекус 2 — до 16:00."
+        # если цифры нет — решаем по времени
+        if hour is not None:
+            if hour < 13:
+                return "snack1"
+            return "snack2"
 
     return None
-    print(f"[DEBUG] meal={meal}, hour={hour}, minute={minute}")
 
 
+# -------------------------
+# Поздние приёмы пищи
+# -------------------------
+def late_message(meal: str, hour: int, minute: int) -> Optional[str]:
+    total = hour * 60 + minute
+
+    if meal == "snack1" and total > 11 * 60:
+        return "⚠️ Первый перекус — до 11:00."
+    if meal == "lunch" and total > 14 * 60:
+        return "⚠️ Обед — до 14:00."
+    if meal == "snack2" and total > 16 * 60:
+        return "⚠️ Второй перекус — до 16:00."
+
+    return None
+
+
+# -------------------------
+# Разница веса
+# -------------------------
 def parse_weight_delta(text: str) -> Optional[float]:
     """
-    Возвращает РАЗНИЦУ ВЕСА в кг (float) или None.
-    Поддержка:
+    Возвращает разницу веса в КГ
     +0.5
-    -0.05
-    плюс 300
+    -0.3
+    плюс 300 (г)
     минус 50
     """
 
-    t = (text or "").lower().replace(",", ".")
+    t = normalize(text).replace(",", ".")
 
-    # граммы считаем ТОЛЬКО если явно указаны
-    is_grams = any(x in t for x in [" гр", "гр ", "грам", "г "])
-
-    m = re.search(
-        r"(?:^|\s)(плюс|минус|\+|-)\s*(\d+(?:\.\d+)?)(?:\s|$)",
-        t
-    )
+    m = re.search(r"(плюс|минус|\+|-)\s*(\d+(?:\.\d+)?)", t)
     if not m:
         return None
 
-    sign_word = m.group(1)
-    sign = -1 if sign_word in ("-", "минус") else 1
+    sign = -1 if m.group(1) in ("-", "минус") else 1
     val = float(m.group(2))
 
     # граммы → кг
-    if is_grams or val >= 10:
+    if "гр" in t or "грам" in t or val >= 10:
         val = val / 1000
 
-    val = round(sign * val, 3)
+    delta = round(sign * val, 3)
 
-    # 🔒 финальный стоп-кран
-    if abs(val) > 5:
+    # защита от бреда
+    if abs(delta) > 5:
         return None
 
-    return val
+    return delta
 
 
-
+# -------------------------
+# Абсолютный вес
+# -------------------------
 def parse_absolute_weight(text: str) -> Optional[float]:
     """
-    Абсолютный вес в кг или None.
-    Поддержка: "Фамилия 49.5", "Фамилия вес 49.5"
-    Диапазон: 30–200
+    Абсолютный вес:
+    49
+    49.5
+    вес 49.2
     """
 
-    t = (text or "").lower().replace(",", ".").strip()
-    if not t:
+    t = normalize(text).replace(",", ".")
+
+    # если есть признаки дельты — не абсолют
+    if any(x in t for x in ["+", "-", "минус", "плюс", "гр", "грам"]):
         return None
 
-    # если это похоже на дельту — не трогаем
-    if any(x in t for x in ["+", "-", "минус", "плюс", "гр", "грам", " g", "г "]):
-        return None
-
-    # если это сообщение про еду — не путать с весом
+    # если это еда — не вес
     if any(w in t for w in ["завтрак", "обед", "ужин", "перекус"]):
         return None
 
-    # берём первое число, но аккуратно
     m = re.search(r"\b(\d{2,3}(?:\.\d{1,3})?)\b", t)
     if not m:
         return None
@@ -137,12 +159,3 @@ def parse_absolute_weight(text: str) -> Optional[float]:
         return round(val, 3)
 
     return None
-
-
-
-
-
-
-
-
-
