@@ -29,8 +29,11 @@ def is_skip(text: str) -> bool:
         "без ", "не будет", "не буду", "пропуск", "пропущу", "пропущен", "пропускаю", "минус", "не"
     ])
 
-def parse_meal(text: str, hour: int) -> str | None:
-    t = text.lower()
+def parse_meal(text: str) -> Optional[str]:
+    t = (text or "").lower()
+
+    # нормализация
+    t = t.replace("перекус1", "перекус 1").replace("перекус2", "перекус 2")
 
     if "завтрак" in t:
         return "breakfast"
@@ -39,19 +42,17 @@ def parse_meal(text: str, hour: int) -> str | None:
     if "ужин" in t:
         return "dinner"
 
-    # СНАЧАЛА перекус 2 (приоритет!)
-    if re.search(r"(перекус\s*2|2\s*перекус|втор(ой|ого)\s+перекус)", t):
+    # перекусы
+    if "перекус 1" in t or ("перекус" in t and "1" in t):
+        return "snack1"
+    if "перекус 2" in t or ("перекус" in t and "2" in t):
         return "snack2"
-
-    # Потом перекус 1
-    if re.search(r"(перекус\s*1|1\s*перекус|перв(ый|ого)\s+перекус)", t):
+    if "перекус" in t:
+        # если номер не указан — считаем как snack1 (или поменяй на None)
         return "snack1"
 
-    # Просто "перекус" без цифры — по времени
-    if "перекус" in t:
-        return "snack1" if hour < 12 else "snack2"
-
     return None
+
 
 def late_message(meal: str, hour: int, minute: int) -> str | None:
     # Перекус 1 — до 11:00 (после 11:00:00 уже поздно)
@@ -139,6 +140,7 @@ def parse_absolute_weight(text: str) -> Optional[float]:
         return round(val, 3)
 
     return None
+
 
 
 
