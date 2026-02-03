@@ -298,7 +298,7 @@ async def report_handler(m: Message):
         sc.write(row, "C", delta)
 
     # -------- ЕДА --------
-    meal = parse_meal(text)
+    meal = detect_meal(text)
     if meal and meal in MEAL_TO_COL:
         col = MEAL_TO_COL[meal]
         mark = "-" if is_skip(text) else "+"
@@ -347,4 +347,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
