@@ -357,41 +357,54 @@ async def report():
     _excused, _active, _mentions, _excused_until = get_sets()
     rows = sc.rows()
 
-    # ВАЖНО: мы НЕ “выбеливаем” таблицу. Красим только то, что нужно.
-    # Индексы: A0 B1 C2 D3 E4 F5 G6 H7 ... J9
-    MEAL_IDX = {"D": 3, "E": 4, "F": 5, "G": 6, "H": 7}
-    MAIN_COLS = ["D", "F", "H"]  # завтрак/обед/ужин (как у тебя в таблице)
+    # Индексы колонок (A=0)
+    MEAL_IDX = {
+        "D": 3,  # завтрак
+        "E": 4,  # перекус 1
+        "F": 5,  # обед
+        "G": 6,  # перекус 2
+        "H": 7,  # ужин
+    }
 
-    for i, r in enumerate(rows, start=2):
+    ALL_MEALS = ["D", "E", "F", "G", "H"]
+    MAIN_MEALS = ["D", "F", "H"]  # завтрак / обед / ужин
+
+    for row_num, r in enumerate(rows, start=2):
         # UID в J
         if len(r) <= 9 or not str(r[9]).strip():
             continue
 
         uid = int(str(r[9]).strip())
 
-        # зелёный: excused
-        if is_excused_today(uid):
-            sc.paint_row(i, GREEN)
-            continue
-
         def cell_val(letter: str) -> str:
             idx = MEAL_IDX[letter]
             return str(r[idx]).strip() if len(r) > idx else ""
 
-        vals = [cell_val("D"), cell_val("E"), cell_val("F"), cell_val("G"), cell_val("H")]
-        all_empty = all(v == "" for v in vals)
+        # 🟢 1. Если предупредил — зелёная строка
+        if is_excused_today(uid):
+            sc.paint_row(row_num, GREEN)
+            continue
 
-        # красный: вообще ничего по еде
-        if all_empty:
-            sc.paint_row(i, RED)
+        values = {col: cell_val(col) for col in ALL_MEALS}
+        has_any_food = any(v != "" for v in values.values())
 
-        # красные ячейки по основным приёмам если пусто
-        for col_letter in MAIN_COLS:
-            if cell_val(col_letter) == "":
-                sc.paint_cell(i, col_letter, RED)
+        # 🔴 2. Если ВООБЩЕ НИЧЕГО НЕТ
+        if not has_any_food:
+            sc.paint_row(row_num, RED)
+            continue
 
+        # 🔴 3. Если что-то было — проверяем ТОЛЬКО основные приёмы
+        for col in MAIN_MEALS:
+            if values[col] == "":
+                sc.paint_cell(row_num, col, RED)
+
+    # Отправка отчёта
     jpg_path = pdf_to_jpeg(sc.export_pdf())
-    await bot.send_photo(TELEGRAM_CHAT_ID, FSInputFile(jpg_path), caption="Отчёт за день")
+    await bot.send_photo(
+        TELEGRAM_CHAT_ID,
+        FSInputFile(jpg_path),
+        caption="Отчёт за день"
+    )
 
 # -------------------------
 # Пинг по обеду: только тем, у кого реально пусто
