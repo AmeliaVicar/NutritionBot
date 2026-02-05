@@ -187,9 +187,9 @@ class Sheets:
         url = (
             f"https://docs.google.com/spreadsheets/d/{self.sid}/export"
             f"?format=pdf"
-            f"&portrait=false"
-            f"&fitw=true"
-            f"&scale=2"
+            f"&portrait=true"
+            f"&fitw=false"
+            f"&scale=1"
             f"&sheetnames=false"
             f"&printtitle=false"
             f"&pagenumbers=false"
