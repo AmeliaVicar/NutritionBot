@@ -100,14 +100,23 @@ def late_message(meal: str, hour: int, minute: int) -> Optional[str]:
 def parse_weight_delta(text: str) -> Optional[float]:
     """
     Возвращает разницу веса в КГ
+
+    Поддержка:
     +0.5
     -0.3
     плюс 300 (г)
     минус 50
+    0
+    0.0
     """
 
     t = normalize(text).replace(",", ".")
 
+    # 1️⃣ Спец-кейс: просто "0" или "0.0"
+    if re.fullmatch(r"0(?:\.0+)?", t):
+        return 0.0
+
+    # 2️⃣ Обычная дельта со знаком
     m = re.search(r"(плюс|минус|\+|-)\s*(\d+(?:\.\d+)?)", t)
     if not m:
         return None
@@ -126,6 +135,7 @@ def parse_weight_delta(text: str) -> Optional[float]:
         return None
 
     return delta
+
 
 
 # -------------------------
