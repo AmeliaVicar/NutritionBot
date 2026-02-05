@@ -159,16 +159,6 @@ def cleanup_expired_excused_until():
         _save(data)
 
 
-def reset_day():
-    """
-    Обнуляем только дневные метки.
-    Важно: mentions и excused_until сохраняем.
-    """
-    data = _load()
-    data["active"] = []
-    data["excused"] = []
-    _save(data)
-
 
 # --- простенький парсер даты "до ..." ---
 MONTHS = {
@@ -235,3 +225,4 @@ def parse_until_date(text: str) -> Optional[str]:
             return None
 
     return None
+
