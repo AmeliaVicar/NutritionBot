@@ -28,7 +28,7 @@ from parser import (
 from sheets import Sheets, GREEN, RED
 from exporter import pdf_to_jpeg
 from state import (
-    mark_active, mark_excused, get_sets, reset_day, save_mention,
+    mark_active, mark_excused, get_sets, save_mention,
     set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until
 )
 
@@ -443,24 +443,16 @@ async def main():
     # Пинг по обеду (как у тебя было)
     scheduler.add_job(
         lunch_ping, "cron",
-        hour=12, minute=30,
+        hour=14, minute=30,
         id="lunch_ping",
         replace_existing=True
     )
 
-    # Отчёт вечером: отправляем ДО ресета
+    # Отчёт вечером
     scheduler.add_job(
         report, "cron",
-        hour=21, minute=45,
+        hour=20, minute=0,
         id="daily_report",
-        replace_existing=True
-    )
-
-    # Сброс в 21:50
-    scheduler.add_job(
-        daily_reset, "cron",
-        hour=21, minute=50,
-        id="daily_reset",
         replace_existing=True
     )
 
@@ -468,9 +460,10 @@ async def main():
     print("Scheduler started.")
     print("Next lunch ping:", scheduler.get_job("lunch_ping").next_run_time)
     print("Next report:", scheduler.get_job("daily_report").next_run_time)
-    print("Next reset:", scheduler.get_job("daily_reset").next_run_time)
+   
 
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
