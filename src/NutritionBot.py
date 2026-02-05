@@ -398,14 +398,15 @@ async def report():
             if values[col] == "":
                 sc.paint_cell(row_num, col, RED)
 
-    # Отправка отчёта
-    jpg_path = pdf_to_jpeg(sc.export_pdf())
-    await bot.send_photo(
-        TELEGRAM_CHAT_ID,
-        FSInputFile(jpg_path),
-        caption="Отчёт за день"
+        # Отправка отчёта
+        jpg_path = pdf_to_jpeg(sc.export_pdf())
+        await bot.send_photo(
+            TELEGRAM_CHAT_ID,
+            FSInputFile(jpg_path),
+            caption="Отчёт за день"
+        )
+        return
 
-    )
 # /reportnow
 @dp.message(F.text == "/reportnow")
 async def report_now(m: Message):
@@ -420,6 +421,7 @@ async def report_now(m: Message):
     await m.reply("⏳ Формирую отчёт...")
     await report()
     await m.reply("✅ Отчёт отправлен.")
+    return
 
 # -------------------------
 # Пинг по обеду: только тем, у кого реально пусто
@@ -485,7 +487,6 @@ async def main():
     print("Scheduler started.")
     print("Next lunch ping:", scheduler.get_job("lunch_ping").next_run_time)
     print("Next report:", scheduler.get_job("daily_report").next_run_time)
-   
 
     await dp.start_polling(bot)
 
