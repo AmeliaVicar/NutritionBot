@@ -189,7 +189,7 @@ class Sheets:
             f"?format=pdf"
             f"&portrait=false"
             f"&fitw=true"
-            f"&scale=1"
+            f"&scale=2"
             f"&sheetnames=false"
             f"&printtitle=false"
             f"&pagenumbers=false"
@@ -287,3 +287,4 @@ class Sheets:
             return int(m.group(1))
 
         return len(self.rows()) + 1
+
