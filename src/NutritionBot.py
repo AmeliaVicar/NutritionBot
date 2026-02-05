@@ -118,6 +118,22 @@ def message_is_report(text: str) -> bool:
 
     return False
 
+# /reportnow
+@dp.message(F.text == "/reportnow")
+async def report_now(m: Message):
+    if not m.from_user:
+        return
+
+    # защита: чтобы не любой участник мог дергать отчёт
+    if m.from_user.id not in ADMIN_IDS:
+        await m.reply("⛔️ У тебя нет доступа к этой команде.")
+        return
+
+    await m.reply("⏳ Формирую отчёт...")
+    await report()
+    await m.reply("✅ Отчёт отправлен.")
+
+
 # -------------------------
 # КНОПКИ (тексты НЕ ТРОГАЮ)
 # -------------------------
@@ -443,7 +459,7 @@ async def lunch_ping():
 # Reset: в 21:50 (как ты просила)
 # -------------------------
 async def daily_reset():
-    reset_day()
+
 
 # -------------------------
 # Запуск
