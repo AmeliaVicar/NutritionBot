@@ -422,6 +422,8 @@ async def report_now(m: Message):
     await m.reply("⏳ Формирую отчёт...")
     await report()
     await m.reply("✅ Отчёт отправлен.")
+    print("REPORTNOW TRIGGERED", m.from_user.id, m.text)
+
 
 
 # -------------------------
