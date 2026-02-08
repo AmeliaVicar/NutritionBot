@@ -189,7 +189,7 @@ class Sheets:
             f"?format=pdf"
             f"&portrait=true"
             f"&fitw=true"
-            f"&scale=2"
+            f"&scale=3"
             f"&sheetnames=false"
             f"&printtitle=false"
             f"&pagenumbers=false"
