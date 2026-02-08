@@ -357,20 +357,18 @@ async def report():
     _excused, _active, _mentions, _excused_until = get_sets()
     rows = sc.rows()
 
-    # Индексы колонок (A=0)
     MEAL_IDX = {
-        "D": 3,  # завтрак
-        "E": 4,  # перекус 1
-        "F": 5,  # обед
-        "G": 6,  # перекус 2
-        "H": 7,  # ужин
+        "D": 3,
+        "E": 4,
+        "F": 5,
+        "G": 6,
+        "H": 7,
     }
 
     ALL_MEALS = ["D", "E", "F", "G", "H"]
-    MAIN_MEALS = ["D", "F", "H"]  # завтрак / обед / ужин
+    MAIN_MEALS = ["D", "F", "H"]
 
     for row_num, r in enumerate(rows, start=2):
-        # UID в J
         if len(r) <= 9 or not str(r[9]).strip():
             continue
 
@@ -380,7 +378,7 @@ async def report():
             idx = MEAL_IDX[letter]
             return str(r[idx]).strip() if len(r) > idx else ""
 
-        # 🟢 1. Если предупредил — зелёная строка
+        # 🟢 excused → зелёная строка
         if is_excused_today(uid):
             sc.paint_row(row_num, GREEN)
             continue
@@ -388,23 +386,26 @@ async def report():
         values = {col: cell_val(col) for col in ALL_MEALS}
         has_any_food = any(v != "" for v in values.values())
 
-        # 🔴 2. Если ВООБЩЕ НИЧЕГО НЕТ
+        # 🔴 вообще ничего не ел
         if not has_any_food:
             sc.paint_row(row_num, RED)
             continue
 
-        # 🔴 3. Если что-то было — проверяем ТОЛЬКО основные приёмы
+        # 🔴 пропущены основные приёмы
         for col in MAIN_MEALS:
             if values[col] == "":
                 sc.paint_cell(row_num, col, RED)
 
-        # Отправка отчёта
-        jpg_path = pdf_to_jpeg(sc.export_pdf())
-        await bot.send_photo(
-            TELEGRAM_CHAT_ID,
-            FSInputFile(jpg_path),
-            caption="Отчёт за день"
-        )
+    # ✅ ОДИН РАЗ после обработки всех строк
+    pdf_path = sc.export_pdf()
+    jpg_path = pdf_to_jpeg(pdf_path)
+
+    await bot.send_photo(
+        TELEGRAM_CHAT_ID,
+        FSInputFile(jpg_path),
+        caption="Отчёт за день"
+    )
+
 
 # /reportnow
     @dp.message(F.text == "/reportnow")
