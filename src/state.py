@@ -114,6 +114,28 @@ def set_excused_until(uid: int, until_iso: str):
     data["excused_until"] = excused_until
     _save(data)
 
+def remove_excused(uid: int):
+    data = _load()
+
+    excused = set(map(int, data.get("excused", [])))
+    excused_until = data.get("excused_until", {})
+
+    changed = False
+
+    if uid in excused:
+        excused.remove(uid)
+        data["excused"] = list(excused)
+        changed = True
+
+    if str(uid) in excused_until:
+        del excused_until[str(uid)]
+        data["excused_until"] = excused_until
+        changed = True
+
+    if changed:
+        _save(data)
+
+
 
 def is_excused_today(uid: int) -> bool:
     """
@@ -160,7 +182,7 @@ def cleanup_expired_excused_until():
 
 
 
-# --- простенький парсер даты "до ..." ---
+# парсер даты "до ..."
 MONTHS = {
     "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5,
     "июн": 6, "июл": 7, "август": 8, "сентябр": 9, "октябр": 10,

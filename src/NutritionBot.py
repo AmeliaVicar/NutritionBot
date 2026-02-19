@@ -29,7 +29,7 @@ from sheets import Sheets, GREEN, RED
 from exporter import pdf_to_jpeg
 from state import (
     mark_active, mark_excused, get_sets, save_mention,
-    set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until
+    set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until, remove_excused
 )
 
 # -------------------------
@@ -402,17 +402,24 @@ async def report():
         values = {col: cell_val(col) for col in ALL_MEALS}
         has_any_food = any(v != "" for v in values.values())
 
-        # 🔴 вообще ничего не ел
+        # Если есть активность — снимаем excused
+        if has_any_food:
+            remove_excused(uid)
+
+        # Теперь решаем цвет
+        if is_excused_today(uid):
+            sc.paint_row(row_num, GREEN)
+            continue
+
         if not has_any_food:
             sc.paint_row(row_num, RED)
             continue
 
-        # 🔴 пропущены основные приёмы
         for col in MAIN_MEALS:
             if values[col] == "":
                 sc.paint_cell(row_num, col, RED)
 
-    # ✅ ОДИН РАЗ после обработки всех строк
+    #  ОДИН РАЗ после обработки всех строк
     pdf_path = sc.export_pdf()
     jpg_path = pdf_to_jpeg(pdf_path)
 
