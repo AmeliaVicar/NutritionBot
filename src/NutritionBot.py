@@ -41,7 +41,21 @@ bot = Bot(
 )
 dp = Dispatcher()
 
-sc = Sheets(SPREADSHEET_ID, SHEET_NAME)
+_sheets_cache : dict[int, Sheets] = {}
+
+def get_sc(chat_id : int) -> Sheets:
+    if chat_id not in GROUPS:
+        raise KeyError(f"Unknown chay_id={chat_id}. Add it to config.CROUPS")
+    if chat_id not in _sheets_cache:
+        cfg = GROUPS[chat_id]
+        _sheets_cache[chat_id] = Sheets(cfg["SPREADSHEET_ID"], cfg["SHEET_NAME"])
+    return _sheets_cache[chat_id]
+
+def is_admin(chat_id: int, uid: int) -> bool:
+    cfg = GROUPS.get(chat_id, {})
+    admins = cfg.get("ADMINS", set())
+    return uid in admins
+
 tz = pytz.timezone(TZ)
 
 ASSETS_DIR = os.path.join(
@@ -130,7 +144,7 @@ async def report_now(m: Message):
         return
 
     await m.reply("⏳ Формирую отчёт...")
-    await report()
+    await report(m.chat.id)
     await m.reply("✅ Отчёт отправлен.")
 
 
@@ -294,16 +308,20 @@ async def report_handler(m: Message):
     else:
         safe_name = (m.from_user.full_name or "участник").replace("<", "").replace(">", "")
         mention = f'<a href="tg://user?id={uid}">{safe_name}</a>'
-    save_mention(uid, mention)
+
+    chat_id = m.chat.id
+    sc = get_sc(chat_id)
+
+    save_mention(chat_id, uid, mention)
 
     # EXCUSE
     if is_excuse(text):
         until_iso = parse_until_date(text)
         if until_iso:
-            set_excused_until(uid, until_iso)
+            set_excused_until(chat_id, uid, until_iso)
             await m.reply(f"Ок, принял. До <b>{until_iso}</b> не буду ждать отчёты ✅")
         else:
-            mark_excused(uid)
+            mark_excused(chat_id, uid)
             await m.reply("Ок, принял. Сегодня отмечу зелёным ✅")
         return
 
@@ -331,7 +349,7 @@ async def report_handler(m: Message):
         except Exception:
             sc.write(row, "C", "")
 
-        mark_active(uid)
+        mark_active(chat_id, uid)
 
     # Дельта
     elif delta is not None:
@@ -348,7 +366,7 @@ async def report_handler(m: Message):
 
         sc.write(row, "B", new_weight)
         sc.write(row, "C", delta)
-        mark_active(uid)
+        mark_active(chat_id, uid)
 
     # -------- ЕДА --------
     meal = detect_meal(text, hour=hour)
@@ -357,7 +375,7 @@ async def report_handler(m: Message):
         skipped = is_skip(text)
         mark = "-" if skipped else "+"
         sc.write(row, col, mark)
-        mark_active(uid)
+        mark_active(chat_id, uid)
 
         # late ping только если это "+"
         if not skipped:
@@ -368,10 +386,13 @@ async def report_handler(m: Message):
 # -------------------------
 # Отчёт: красим и отправляем
 # -------------------------
-async def report():
-    cleanup_expired_excused_until()
-    _excused, _active, _mentions, _excused_until = get_sets()
+async def report(chat_id: int):
+    cleanup_expired_excused_until(chat_id)
+
+    sc = get_sc(chat_id)
     rows = sc.rows()
+
+    _excused, _active, _mentions, _excused_until = get_sets(chat_id)
 
     MEAL_IDX = {
         "D": 3,
@@ -394,52 +415,38 @@ async def report():
             idx = MEAL_IDX[letter]
             return str(r[idx]).strip() if len(r) > idx else ""
 
-        # 🟢 excused → зелёная строка
-        if is_excused_today(uid):
-            sc.paint_row(row_num, GREEN)
-            continue
-
         values = {col: cell_val(col) for col in ALL_MEALS}
-        has_any_food = any(v != "" for v in values.values())
 
-        # Если есть активность — снимаем excused
+        has_any_food = any(v in {"+", "-"} for v in values.values())
         if has_any_food:
-            remove_excused(uid)
-
-        # Теперь решаем цвет
-        if is_excused_today(uid):
+            remove_excused(chat_id, uid)
+        if is_excused_today(chat_id, uid):
             sc.paint_row(row_num, GREEN)
             continue
-
         if not has_any_food:
-            sc.paint_row(row_num, RED)
+            sc.paint_row(row_num,RED)
             continue
-
         for col in MAIN_MEALS:
             if values[col] == "":
                 sc.paint_cell(row_num, col, RED)
 
-    #  ОДИН РАЗ после обработки всех строк
     pdf_path = sc.export_pdf()
     jpg_path = pdf_to_jpeg(pdf_path)
 
-    await bot.send_photo(
-        TELEGRAM_CHAT_ID,
+    await  bot.send_photo(
+        chat_id,
         FSInputFile(jpg_path),
-        caption="Отчёт за день"
+        caption = "Отчет за день"
     )
-
-
-
-
-
 # -------------------------
 # Пинг по обеду: только тем, у кого реально пусто
 # -------------------------
-async def lunch_ping():
-    cleanup_expired_excused_until()
+async def lunch_ping(chat_id: int):
+    cleanup_expired_excused_until(chat_id)
+
+    sc = get_sc(chat_id)
     rows = sc.rows()
-    _excused, _active, mentions, _excused_until = get_sets()
+    _excused, _active, mentions, _excused_until = get_sets(chat_id)
 
     missing = []
     for i, r in enumerate(rows, start=2):
@@ -447,7 +454,7 @@ async def lunch_ping():
             continue
 
         uid = int(str(r[9]).strip())
-        if is_excused_today(uid):
+        if is_excused_today(chat_id, uid):
             continue
 
         # lunch = колонка F = индекс 5
@@ -464,10 +471,7 @@ async def lunch_ping():
         "Пожалуйста, отправьте отчёт по обеду 👇\n\n" +
         "\n".join(tags)
     )
-    await bot.send_message(TELEGRAM_CHAT_ID, text)
-
-
-
+    await bot.send_message(chat_id, text)
 
 # -------------------------
 # Запуск
@@ -477,26 +481,29 @@ async def main():
 
     scheduler = AsyncIOScheduler(timezone=tz)
 
-    # Пинг по обеду (как у тебя было)
-    scheduler.add_job(
-        lunch_ping, "cron",
-        hour=14, minute=30,
-        id="lunch_ping",
-        replace_existing=True
-    )
+    for chat_id, cfg in GROUPS.items():
+        # Пинг по обеду
+        scheduler.add_job(
+            lunch_ping, "cron",
+            hour=14, minute=30,
+            args=[chat_id],
+            id=f"lunch_ping_{chat_id}",
+            replace_existing=True
+        )
 
-    # Отчёт вечером
-    scheduler.add_job(
-        report, "cron",
-        hour=20, minute=0,
-        id="daily_report",
-        replace_existing=True
-    )
+        # Отчёт вечером
+        scheduler.add_job(
+            report, "cron",
+            hour=20, minute=0,
+            args=[chat_id],
+            id=f"daily_report_{chat_id}",
+            replace_existing=True
+        )
 
     scheduler.start()
     print("Scheduler started.")
-    print("Next lunch ping:", scheduler.get_job("lunch_ping").next_run_time)
-    print("Next report:", scheduler.get_job("daily_report").next_run_time)
+    for job in scheduler.get_jobs():
+        print("JOB:", job.id, "next:", job.next_run_time)
 
     await dp.start_polling(bot)
 

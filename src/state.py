@@ -1,147 +1,115 @@
 import json
 import os
 import re
-import pytz
-from datetime import date, datetime
+from datetime import date
 from typing import Tuple, Dict, Set, Optional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
-TZ = "Europe/Moscow"  # или возьми из config, если у тебя так принято
 
-def parse_until_date(text: str) -> str | None:
-    """
-    Ищет дату после слова "до": "уехала до 14 января", "до 14.01", "до 14/01".
-    Возвращает ISO: YYYY-MM-DD
-    """
-    t = (text or "").lower()
-
-    # 14.01 / 14-01 / 14/01 / 14.01.2026
-    m = re.search(r"\bдо\s+(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?\b", t)
-    if m:
-        d = int(m.group(1))
-        mo = int(m.group(2))
-        y = m.group(3)
-        if y:
-            y = int(y)
-            if y < 100:
-                y += 2000
-        else:
-            y = datetime.now(pytz.timezone(TZ)).year
-        try:
-            return f"{y:04d}-{mo:02d}-{d:02d}"
-        except Exception:
-            return None
-
-    # "до 14 января"
-    months = {
-        "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5,
-        "июн": 6, "июл": 7, "август": 8, "сентябр": 9, "октябр": 10,
-        "ноябр": 11, "декабр": 12
+def _new_group_state() -> dict:
+    # важно: новые объекты, не copy()
+    return {
+        "active": [],
+        "excused": [],
+        "mentions": {},
+        "excused_until": {}
     }
-    m2 = re.search(r"\bдо\s+(\d{1,2})\s+([а-яё]+)\b", t)
-    if m2:
-        d = int(m2.group(1))
-        mon_word = m2.group(2)
-        mo = None
-        for k, v in months.items():
-            if mon_word.startswith(k):
-                mo = v
-                break
-        if mo is None:
-            return None
-        y = datetime.now(pytz.timezone(TZ)).year
-        return f"{y:04d}-{mo:02d}-{d:02d}"
 
-    return None
-
-def _today_iso() -> str:
-    return date.today().isoformat()
-
-
-def _load() -> dict:
+def _load_all() -> dict:
     if not os.path.exists(STATE_PATH):
-        return {"active": [], "excused": [], "mentions": {}, "excused_until": {}}
+        return {}
     with open(STATE_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except Exception:
+            # если файл битый — не падаем
+            return {}
 
-
-def _save(data: dict):
+def _save_all(data: dict):
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def _get_group(data: dict, chat_id: int) -> dict:
+    key = str(chat_id)
+    if key not in data or not isinstance(data.get(key), dict):
+        data[key] = _new_group_state()
+    else:
+        # миграция/самовосстановление ключей, если вдруг старый формат
+        g = data[key]
+        g.setdefault("active", [])
+        g.setdefault("excused", [])
+        g.setdefault("mentions", {})
+        g.setdefault("excused_until", {})
+    return data[key]
 
-def get_sets() -> Tuple[Set[int], Set[int], Dict[str, str], Dict[str, str]]:
-    """
-    returns: excused, active, mentions, excused_until
-    """
-    data = _load()
-    excused = set(map(int, data.get("excused", [])))
-    active = set(map(int, data.get("active", [])))
-    mentions = data.get("mentions", {})
-    excused_until = data.get("excused_until", {})
+def get_sets(chat_id: int) -> Tuple[Set[int], Set[int], Dict[str, str], Dict[str, str]]:
+    data = _load_all()
+    g = _get_group(data, chat_id)
+    excused = set(map(int, g.get("excused", [])))
+    active = set(map(int, g.get("active", [])))
+    mentions = g.get("mentions", {})
+    excused_until = g.get("excused_until", {})
     return excused, active, mentions, excused_until
 
+def save_mention(chat_id: int, uid: int, mention: str):
+    data = _load_all()
+    g = _get_group(data, chat_id)
+    g["mentions"][str(uid)] = mention
+    _save_all(data)
 
-def save_mention(uid: int, mention: str):
-    data = _load()
-    mentions = data.get("mentions", {})
-    mentions[str(uid)] = mention
-    data["mentions"] = mentions
-    _save(data)
-
-
-def mark_excused(uid: int):
-    data = _load()
-    s = set(map(int, data.get("excused", [])))
+def mark_excused(chat_id: int, uid: int):
+    data = _load_all()
+    g = _get_group(data, chat_id)
+    s = set(map(int, g.get("excused", [])))
     s.add(uid)
-    data["excused"] = list(s)
-    _save(data)
+    g["excused"] = list(s)
+    _save_all(data)
 
+def mark_active(chat_id: int, uid: int):
+    data = _load_all()
+    g = _get_group(data, chat_id)
 
-def mark_active(uid: int):
-    data = _load()
-    s = set(map(int, data.get("active", [])))
+    s = set(map(int, g.get("active", [])))
     s.add(uid)
-    data["active"] = list(s)
-    _save(data)
+    g["active"] = list(s)
 
+    # логика здравого смысла: если активен — точно не "без отчётов"
+    exc = set(map(int, g.get("excused", [])))
+    if uid in exc:
+        exc.discard(uid)
+        g["excused"] = list(exc)
 
-def set_excused_until(uid: int, until_iso: str):
-    data = _load()
-    excused_until = data.get("excused_until", {})
-    excused_until[str(uid)] = until_iso
-    data["excused_until"] = excused_until
-    _save(data)
+    # и "уехала до ..." тоже снимаем, если человек начал отчитываться
+    if str(uid) in g.get("excused_until", {}):
+        del g["excused_until"][str(uid)]
 
-def remove_excused(uid: int):
-    data = _load()
+    _save_all(data)
 
-    excused = set(map(int, data.get("excused", [])))
-    excused_until = data.get("excused_until", {})
+def remove_excused(chat_id: int, uid: int):
+    # то, чего тебе не хватало для снятия зелёного
+    data = _load_all()
+    g = _get_group(data, chat_id)
 
-    changed = False
+    exc = set(map(int, g.get("excused", [])))
+    if uid in exc:
+        exc.discard(uid)
+        g["excused"] = list(exc)
 
-    if uid in excused:
-        excused.remove(uid)
-        data["excused"] = list(excused)
-        changed = True
+    if str(uid) in g.get("excused_until", {}):
+        del g["excused_until"][str(uid)]
 
-    if str(uid) in excused_until:
-        del excused_until[str(uid)]
-        data["excused_until"] = excused_until
-        changed = True
+    _save_all(data)
 
-    if changed:
-        _save(data)
+def set_excused_until(chat_id: int, uid: int, until_iso: str):
+    data = _load_all()
+    g = _get_group(data, chat_id)
+    g["excused_until"][str(uid)] = until_iso
+    _save_all(data)
 
+def is_excused_today(chat_id: int, uid: int) -> bool:
+    excused, _active, _mentions, excused_until = get_sets(chat_id)
 
-
-def is_excused_today(uid: int) -> bool:
-    """
-    True если excused сегодня или excused_until не истёк.
-    """
-    excused, _active, _mentions, excused_until = get_sets()
     if uid in excused:
         return True
 
@@ -155,13 +123,11 @@ def is_excused_today(uid: int) -> bool:
     except Exception:
         return False
 
+def cleanup_expired_excused_until(chat_id: int):
+    data = _load_all()
+    g = _get_group(data, chat_id)
 
-def cleanup_expired_excused_until():
-    """
-    Можно дергать раз в день, чтобы чистить старые "до даты".
-    """
-    data = _load()
-    excused_until = data.get("excused_until", {})
+    excused_until = g.get("excused_until", {})
     today = date.today()
 
     changed = False
@@ -172,36 +138,23 @@ def cleanup_expired_excused_until():
                 del excused_until[k]
                 changed = True
         except Exception:
-            # если кривой формат — удаляем
             del excused_until[k]
             changed = True
 
     if changed:
-        data["excused_until"] = excused_until
-        _save(data)
+        g["excused_until"] = excused_until
+        _save_all(data)
 
-
-
-# парсер даты "до ..."
+# parse_until_date (оставил твою логику, только чуть подчистил)
 MONTHS = {
     "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5,
     "июн": 6, "июл": 7, "август": 8, "сентябр": 9, "октябр": 10,
     "ноябр": 11, "декабр": 12,
 }
 
-
 def parse_until_date(text: str) -> Optional[str]:
-    """
-    Ищет дату в фразах типа:
-      - "уехала до 14.01"
-      - "до 14.01.2026"
-      - "до 14 января"
-      - "до 14"  (тогда текущий месяц/год)
-    Возвращает ISO YYYY-MM-DD или None
-    """
     t = (text or "").lower()
 
-    # dd.mm(.yyyy)
     m = re.search(r"до\s+(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?", t)
     if m:
         dd = int(m.group(1))
@@ -218,11 +171,11 @@ def parse_until_date(text: str) -> Optional[str]:
         except Exception:
             return None
 
-    # "до 14 января"
-    m = re.search(r"до\s+(\d{1,2})\s+([а-я]+)", t)
+    m = re.search(r"до\s+(\d{1,2})\s+([а-яё]+)", t)
     if m:
         dd = int(m.group(1))
         month_word = m.group(2)
+
         mm = None
         for k, v in MONTHS.items():
             if month_word.startswith(k):
@@ -230,13 +183,13 @@ def parse_until_date(text: str) -> Optional[str]:
                 break
         if mm is None:
             return None
+
         yy = date.today().year
         try:
             return date(yy, mm, dd).isoformat()
         except Exception:
             return None
 
-    # "до 14"
     m = re.search(r"до\s+(\d{1,2})\b", t)
     if m:
         dd = int(m.group(1))
@@ -247,4 +200,3 @@ def parse_until_date(text: str) -> Optional[str]:
             return None
 
     return None
-

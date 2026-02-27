@@ -1,12 +1,18 @@
-import os
-from dotenv import load_dotenv
 
-load_dotenv()
+BOT_TOKEN = '8561683073:AAEcFqMTERW9fvwFs6_J9yLajmtJ99U7Fbo'
+GROUPS = {
+    #Группа1
+    -1003531427259:{
+        "SPREADSHEET_ID" : "1Zc6c6u5tBtmh2-dGy3JkLJhIOA1Ozuigild9vJKNtvE",
+        "SHEET_NAME" : "Jan-Mar",
+    },
+    #Группа2
+    -5165823358:{
+        "SPREADSHEET_ID" : "1Zc6c6u5tBtmh2-dGy3JkLJhIOA1Ozuigild9vJKNtvE",
+        "SHEET_NAME" : "Mar-May",
+    },
+}
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-SHEET_NAME = os.getenv("SHEET_NAME", "Sheet1")
-TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
-TZ = os.getenv("TZ", "Europe/Moscow")
-EXPORT_SCALE = int(os.getenv("EXPORT_SCALE", "2"))
+TZ = "Europe/Moscow"
+EXPORT_SCALE = int("2")
 ADMIN_IDS = {830570573}
