@@ -7,7 +7,7 @@ GROUPS = {
         "SHEET_NAME" : "Jan-Mar",
     },
     #Группа2
-    -5165823358:{
+    -1003637264298:{
         "SPREADSHEET_ID" : "1Zc6c6u5tBtmh2-dGy3JkLJhIOA1Ozuigild9vJKNtvE",
         "SHEET_NAME" : "Mar-May",
     },
