@@ -147,9 +147,70 @@ async def report_now(m: Message):
     await report(m.chat.id)
     await m.reply("✅ Отчёт отправлен.")
 
+def _norm(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+MEAL_WORDS = {"завтрак", "обед", "ужин", "перекус"}
+
+def extract_fio_prefix(text: str) -> str:
+    """
+    Берём начало сообщения до слова приёма пищи/служебных слов.
+    Примеры:
+      "Сунко Софья завтрак" -> "Сунко Софья"
+      "Сунко завтрак" -> "Сунко"
+      "Сунко перекус 1" -> "Сунко"
+    """
+    t = _norm(text)
+    parts = t.split()
+    if not parts:
+        return ""
+
+    fio_parts = []
+    for p in parts:
+        if p in MEAL_WORDS:
+            break
+        # часто "перекус 1" / "перекус 2"
+        if p.isdigit():
+            break
+        fio_parts.append(p)
+        # максимум 2 слова ФИО (фамилия + имя)
+        if len(fio_parts) >= 2:
+            break
+
+    return " ".join(fio_parts).strip()
+
+def find_row_by_fio_in_rows(rows: list[list], fio: str) -> int | None:
+    """
+    Ищем строку по колонке A (индекс 0) по фамилии/ФИО.
+    Возвращаем номер строки в sheet (начиная с 2).
+    """
+    fio_n = _norm(fio)
+    if not fio_n:
+        return None
+
+    fio_first = fio_n.split()[0]
+
+    for i, r in enumerate(rows, start=2):
+        a = _norm(r[0] if len(r) > 0 else "")
+        if not a:
+            continue
+        a_first = a.split()[0]
+
+        # матч по фамилии (первое слово)
+        if a_first == fio_first:
+            return i
+
+        # или полное совпадение первых 1-2 слов
+        if a == fio_n:
+            return i
+
+    return None
+
 
 # -------------------------
-# КНОПКИ (тексты НЕ ТРОГАЮ)
+# КНОПКИ
 # -------------------------
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[
@@ -327,8 +388,30 @@ async def report_handler(m: Message):
 
     # строка по UID
     row = sc.find_row_by_uid(uid)
+
+    # ✅ авто-регистрация / авто-привязка
     if row is None:
-        return
+        fio = extract_fio_prefix(text)
+
+        # читаем строки один раз
+        rows = sc.rows()
+
+        # пробуем найти по фамилии/ФИО в колонке A
+        found_row = find_row_by_fio_in_rows(rows, fio)
+
+        if found_row is not None:
+            # привязали UID к существующей строке
+            sc.write(found_row, "J", uid)
+            row = found_row
+        else:
+            # создаём новую строку внизу
+            new_row = len(rows) + 2  # так как rows начинается с A2
+            # если fio пустой — хотя бы фамилию/что-то
+            fio_to_write = fio if fio else (m.from_user.full_name or "Участник")
+            sc.write(new_row, "A", fio_to_write)
+            sc.write(new_row, "J", uid)
+            row = new_row
+
 
     # -------- ВЕС --------
     delta = parse_weight_delta(text)
