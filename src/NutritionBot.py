@@ -355,6 +355,16 @@ async def report_handler(m: Message):
     if not m.from_user:
         return
 
+    if m.chat.id == -1003637264298:
+        print(
+            "MSG",
+            "chat_id=", m.chat.id,
+            "uid=", m.from_user.id,
+            "username=", getattr(m.from_user, "username", None),
+            "name=", m.from_user.full_name,
+            "text=", (m.text or m.caption or "")
+        )
+
     text = get_msg_text(m)
     if not message_is_report(text):
         return
