@@ -390,7 +390,7 @@ async def report_handler(m: Message):
     row = sc.find_row_by_uid(uid)
 
     # ✅ авто-регистрация / авто-привязка
-    if row is None:
+    if AUTO_BIND_UID and row is None:
         fio = extract_fio_prefix(text)
 
         # читаем строки один раз
@@ -412,6 +412,8 @@ async def report_handler(m: Message):
             sc.write(new_row, "J", uid)
             row = new_row
 
+    if row is None:
+        return
 
     # -------- ВЕС --------
     delta = parse_weight_delta(text)
