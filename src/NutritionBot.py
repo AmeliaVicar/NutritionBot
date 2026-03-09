@@ -22,6 +22,9 @@ from parser import (
     is_skip,
     is_excuse,
     late_message,
+    looks_like_meal_report,
+    looks_like_weight_report,
+    extract_meal_marks,
     parse_weight_delta,
     parse_absolute_weight,
 )
@@ -86,47 +89,18 @@ def get_msg_text(m: Message) -> str:
     return (m.text or m.caption or "").strip()
 
 def looks_like_weight_or_delta(text: str) -> bool:
-    """
-    Чтобы не терять сообщения типа:
-    "49.7" или "-0.3" или "минус 300"
-    """
-    t = (text or "").lower().replace(",", ".").strip()
-    if not t:
-        return False
+    return looks_like_weight_report(text)
 
-    # если парсер уже видит — отлично
-    if parse_weight_delta(t) is not None:
-        return True
-    if parse_absolute_weight(t) is not None:
-        return True
-
-    # запасной вариант: просто число 2-3 знака (49 / 49.7)
-    if re.fullmatch(r"\d{2,3}(\.\d{1,3})?", t):
-        return True
-
-    return False
 
 def message_is_report(text: str) -> bool:
-    """
-    Пропускаем:
-    - еду
-    - вес/разницу
-    - "без отчётов"/отмазки
-    """
+    """Return True only for messages that look like actual reports."""
     if not text or text.startswith("/"):
         return False
 
-    t = text.lower()
-
-    # отмазка
-    if is_excuse(t):
+    if is_excuse(text):
         return True
-
-    # еда
-    if any(w in t for w in ["завтрак", "обед", "ужин", "перекус"]):
+    if looks_like_meal_report(text):
         return True
-
-    # вес/дельта (в том числе "49.7" без слова "вес")
     if looks_like_weight_or_delta(text):
         return True
 
@@ -370,10 +344,9 @@ async def report_handler(m: Message):
         return
 
     uid = m.from_user.id
-    now = datetime.now(tz)
-    hour, minute = now.hour, now.minute
+    msg_dt = m.date.astimezone(tz) if m.date else datetime.now(tz)
+    hour, minute = msg_dt.hour, msg_dt.minute
 
-    # mentions для пингов
     if m.from_user.username:
         mention = "@" + m.from_user.username
     else:
@@ -382,10 +355,10 @@ async def report_handler(m: Message):
 
     chat_id = m.chat.id
     sc = get_sc(chat_id)
-
     save_mention(chat_id, uid, mention)
 
-    # EXCUSE
+    meal_marks = extract_meal_marks(text, hour=hour)
+
     if is_excuse(text):
         until_iso = parse_until_date(text)
         if until_iso:
@@ -394,29 +367,22 @@ async def report_handler(m: Message):
         else:
             mark_excused(chat_id, uid)
             await m.reply("Ок, принял. Сегодня отмечу зелёным ✅")
-        return
 
-    # строка по UID
+        if not meal_marks and parse_weight_delta(text) is None and parse_absolute_weight(text) is None:
+            return
+
     row = sc.find_row_by_uid(uid)
 
-    # ✅ авто-регистрация / авто-привязка
     if AUTO_BIND_UID and row is None:
         fio = extract_fio_prefix(text)
-
-        # читаем строки один раз
         rows = sc.rows()
-
-        # пробуем найти по фамилии/ФИО в колонке A
         found_row = find_row_by_fio_in_rows(rows, fio)
 
         if found_row is not None:
-            # привязали UID к существующей строке
             sc.write(found_row, "J", uid)
             row = found_row
         else:
-            # создаём новую строку внизу
-            new_row = len(rows) + 2  # так как rows начинается с A2
-            # если fio пустой — хотя бы фамилию/что-то
+            new_row = len(rows) + 2
             fio_to_write = fio if fio else (m.from_user.full_name or "Участник")
             sc.write(new_row, "A", fio_to_write)
             sc.write(new_row, "J", uid)
@@ -425,60 +391,48 @@ async def report_handler(m: Message):
     if row is None:
         return
 
-    # -------- ВЕС --------
     delta = parse_weight_delta(text)
     abs_w = parse_absolute_weight(text)
 
-    # Абсолютный
     if abs_w is not None:
         prev_raw = sc.get_cell(f"B{row}")
         sc.write(row, "B", abs_w)
-
         try:
             prev = float(str(prev_raw).replace(",", "."))
             diff = round(abs_w - prev, 3)
-            if abs(diff) <= 5:
-                sc.write(row, "C", diff)
-            else:
-                sc.write(row, "C", "")
+            sc.write(row, "C", diff if abs(diff) <= 5 else "")
         except Exception:
             sc.write(row, "C", "")
-
         mark_active(chat_id, uid)
 
-    # Дельта
     elif delta is not None:
         prev_raw = sc.get_cell(f"B{row}")
         try:
             prev = float(str(prev_raw).replace(",", "."))
         except Exception:
-            # нет прошлого веса — не пытаемся “считать из воздуха”
-            return
+            prev = None
 
-        new_weight = round(prev + delta, 3)
-        if not (30 <= new_weight <= 200):
-            return
+        if prev is not None:
+            new_weight = round(prev + delta, 3)
+            if 30 <= new_weight <= 200:
+                sc.write(row, "B", new_weight)
+                sc.write(row, "C", delta)
+                mark_active(chat_id, uid)
 
-        sc.write(row, "B", new_weight)
-        sc.write(row, "C", delta)
-        mark_active(chat_id, uid)
+    seen_meals = set()
+    for meal, mark in meal_marks:
+        if meal not in MEAL_TO_COL or meal in seen_meals:
+            continue
 
-    # -------- ЕДА --------
-    meal = detect_meal(text, hour=hour)
-    if meal and meal in MEAL_TO_COL:
+        seen_meals.add(meal)
         col = MEAL_TO_COL[meal]
-        skipped = is_skip(text)
-        mark = "-" if skipped else "+"
         sc.write(row, col, mark)
         mark_active(chat_id, uid)
 
-        # late ping только если это "+"
-        if not skipped:
+        if mark == "+":
             msg = late_message(meal, hour, minute)
             if msg:
                 await m.reply(msg)
-
-# -------------------------
 # Отчёт: красим и отправляем
 # -------------------------
 async def report(chat_id: int):
