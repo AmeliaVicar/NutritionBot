@@ -2,19 +2,21 @@ import json
 import os
 import re
 from datetime import date
-from typing import Tuple, Dict, Set, Optional
+from typing import Dict, Optional, Set, Tuple
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
 
+
 def _new_group_state() -> dict:
-    # важно: новые объекты, не copy()
     return {
         "active": [],
         "excused": [],
         "mentions": {},
-        "excused_until": {}
+        "excused_until": {},
+        "users": {},
     }
+
 
 def _load_all() -> dict:
     if not os.path.exists(STATE_PATH):
@@ -23,89 +25,118 @@ def _load_all() -> dict:
         try:
             return json.load(f)
         except Exception:
-            # если файл битый — не падаем
             return {}
+
 
 def _save_all(data: dict):
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def _get_group(data: dict, chat_id: int) -> dict:
     key = str(chat_id)
     if key not in data or not isinstance(data.get(key), dict):
         data[key] = _new_group_state()
     else:
-        # миграция/самовосстановление ключей, если вдруг старый формат
-        g = data[key]
-        g.setdefault("active", [])
-        g.setdefault("excused", [])
-        g.setdefault("mentions", {})
-        g.setdefault("excused_until", {})
+        group = data[key]
+        group.setdefault("active", [])
+        group.setdefault("excused", [])
+        group.setdefault("mentions", {})
+        group.setdefault("excused_until", {})
+        group.setdefault("users", {})
     return data[key]
+
 
 def get_sets(chat_id: int) -> Tuple[Set[int], Set[int], Dict[str, str], Dict[str, str]]:
     data = _load_all()
-    g = _get_group(data, chat_id)
-    excused = set(map(int, g.get("excused", [])))
-    active = set(map(int, g.get("active", [])))
-    mentions = g.get("mentions", {})
-    excused_until = g.get("excused_until", {})
+    group = _get_group(data, chat_id)
+    excused = set(map(int, group.get("excused", [])))
+    active = set(map(int, group.get("active", [])))
+    mentions = group.get("mentions", {})
+    excused_until = group.get("excused_until", {})
     return excused, active, mentions, excused_until
+
 
 def save_mention(chat_id: int, uid: int, mention: str):
     data = _load_all()
-    g = _get_group(data, chat_id)
-    g["mentions"][str(uid)] = mention
+    group = _get_group(data, chat_id)
+    group["mentions"][str(uid)] = mention
     _save_all(data)
+
+
+def save_user(chat_id: int, uid: int, username: str | None, full_name: str | None):
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    group["users"][str(uid)] = {
+        "username": (username or "").strip(),
+        "full_name": (full_name or "").strip(),
+    }
+    _save_all(data)
+
+
+def get_users(chat_id: int) -> Dict[str, Dict[str, str]]:
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    users = group.get("users", {})
+    users = users if isinstance(users, dict) else {}
+
+    mentions = group.get("mentions", {})
+    if isinstance(mentions, dict):
+        for uid in mentions:
+            users.setdefault(str(uid), {"username": "", "full_name": ""})
+
+    return users
+
 
 def mark_excused(chat_id: int, uid: int):
     data = _load_all()
-    g = _get_group(data, chat_id)
-    s = set(map(int, g.get("excused", [])))
-    s.add(uid)
-    g["excused"] = list(s)
+    group = _get_group(data, chat_id)
+    excused = set(map(int, group.get("excused", [])))
+    excused.add(uid)
+    group["excused"] = list(excused)
     _save_all(data)
+
 
 def mark_active(chat_id: int, uid: int):
     data = _load_all()
-    g = _get_group(data, chat_id)
+    group = _get_group(data, chat_id)
 
-    s = set(map(int, g.get("active", [])))
-    s.add(uid)
-    g["active"] = list(s)
+    active = set(map(int, group.get("active", [])))
+    active.add(uid)
+    group["active"] = list(active)
 
-    # логика здравого смысла: если активен — точно не "без отчётов"
-    exc = set(map(int, g.get("excused", [])))
-    if uid in exc:
-        exc.discard(uid)
-        g["excused"] = list(exc)
+    excused = set(map(int, group.get("excused", [])))
+    if uid in excused:
+        excused.discard(uid)
+        group["excused"] = list(excused)
 
-    # и "уехала до ..." тоже снимаем, если человек начал отчитываться
-    if str(uid) in g.get("excused_until", {}):
-        del g["excused_until"][str(uid)]
+    if str(uid) in group.get("excused_until", {}):
+        del group["excused_until"][str(uid)]
 
     _save_all(data)
+
 
 def remove_excused(chat_id: int, uid: int):
-    # то, чего тебе не хватало для снятия зелёного
     data = _load_all()
-    g = _get_group(data, chat_id)
+    group = _get_group(data, chat_id)
 
-    exc = set(map(int, g.get("excused", [])))
-    if uid in exc:
-        exc.discard(uid)
-        g["excused"] = list(exc)
+    excused = set(map(int, group.get("excused", [])))
+    if uid in excused:
+        excused.discard(uid)
+        group["excused"] = list(excused)
 
-    if str(uid) in g.get("excused_until", {}):
-        del g["excused_until"][str(uid)]
+    if str(uid) in group.get("excused_until", {}):
+        del group["excused_until"][str(uid)]
 
     _save_all(data)
+
 
 def set_excused_until(chat_id: int, uid: int, until_iso: str):
     data = _load_all()
-    g = _get_group(data, chat_id)
-    g["excused_until"][str(uid)] = until_iso
+    group = _get_group(data, chat_id)
+    group["excused_until"][str(uid)] = until_iso
     _save_all(data)
+
 
 def is_excused_today(chat_id: int, uid: int) -> bool:
     excused, _active, _mentions, excused_until = get_sets(chat_id)
@@ -118,84 +149,95 @@ def is_excused_today(chat_id: int, uid: int) -> bool:
         return False
 
     try:
-        until_d = date.fromisoformat(until)
-        return date.today() <= until_d
+        until_date = date.fromisoformat(until)
+        return date.today() <= until_date
     except Exception:
         return False
 
+
 def cleanup_expired_excused_until(chat_id: int):
     data = _load_all()
-    g = _get_group(data, chat_id)
+    group = _get_group(data, chat_id)
 
-    excused_until = g.get("excused_until", {})
+    excused_until = group.get("excused_until", {})
     today = date.today()
 
     changed = False
-    for k, v in list(excused_until.items()):
+    for key, value in list(excused_until.items()):
         try:
-            d = date.fromisoformat(v)
-            if d < today:
-                del excused_until[k]
+            parsed = date.fromisoformat(value)
+            if parsed < today:
+                del excused_until[key]
                 changed = True
         except Exception:
-            del excused_until[k]
+            del excused_until[key]
             changed = True
 
     if changed:
-        g["excused_until"] = excused_until
+        group["excused_until"] = excused_until
         _save_all(data)
 
-# parse_until_date (оставил твою логику, только чуть подчистил)
+
 MONTHS = {
-    "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5,
-    "июн": 6, "июл": 7, "август": 8, "сентябр": 9, "октябр": 10,
-    "ноябр": 11, "декабр": 12,
+    "\u044f\u043d\u0432\u0430\u0440": 1,
+    "\u0444\u0435\u0432\u0440\u0430\u043b": 2,
+    "\u043c\u0430\u0440\u0442": 3,
+    "\u0430\u043f\u0440\u0435\u043b": 4,
+    "\u043c\u0430": 5,
+    "\u0438\u044e\u043d": 6,
+    "\u0438\u044e\u043b": 7,
+    "\u0430\u0432\u0433\u0443\u0441\u0442": 8,
+    "\u0441\u0435\u043d\u0442\u044f\u0431\u0440": 9,
+    "\u043e\u043a\u0442\u044f\u0431\u0440": 10,
+    "\u043d\u043e\u044f\u0431\u0440": 11,
+    "\u0434\u0435\u043a\u0430\u0431\u0440": 12,
 }
 
+
 def parse_until_date(text: str) -> Optional[str]:
-    t = (text or "").lower()
+    normalized = (text or "").lower().replace("\u0451", "\u0435")
 
-    m = re.search(r"до\s+(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?", t)
-    if m:
-        dd = int(m.group(1))
-        mm = int(m.group(2))
-        yy = m.group(3)
-        if yy:
-            yy = int(yy)
-            if yy < 100:
-                yy += 2000
+    match = re.search(r"\u0434\u043e\s+(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?", normalized)
+    if match:
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year_raw = match.group(3)
+        if year_raw:
+            year = int(year_raw)
+            if year < 100:
+                year += 2000
         else:
-            yy = date.today().year
+            year = date.today().year
         try:
-            return date(yy, mm, dd).isoformat()
+            return date(year, month, day).isoformat()
         except Exception:
             return None
 
-    m = re.search(r"до\s+(\d{1,2})\s+([а-яё]+)", t)
-    if m:
-        dd = int(m.group(1))
-        month_word = m.group(2)
+    match = re.search(r"\u0434\u043e\s+(\d{1,2})\s+([\u0430-\u044f]+)", normalized)
+    if match:
+        day = int(match.group(1))
+        month_word = match.group(2)
 
-        mm = None
-        for k, v in MONTHS.items():
-            if month_word.startswith(k):
-                mm = v
+        month = None
+        for prefix, number in MONTHS.items():
+            if month_word.startswith(prefix):
+                month = number
                 break
-        if mm is None:
+        if month is None:
             return None
 
-        yy = date.today().year
+        year = date.today().year
         try:
-            return date(yy, mm, dd).isoformat()
+            return date(year, month, day).isoformat()
         except Exception:
             return None
 
-    m = re.search(r"до\s+(\d{1,2})\b", t)
-    if m:
-        dd = int(m.group(1))
+    match = re.search(r"\u0434\u043e\s+(\d{1,2})\b", normalized)
+    if match:
+        day = int(match.group(1))
         today = date.today()
         try:
-            return date(today.year, today.month, dd).isoformat()
+            return date(today.year, today.month, day).isoformat()
         except Exception:
             return None
 

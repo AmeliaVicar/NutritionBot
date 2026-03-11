@@ -7,6 +7,7 @@ import pytz
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import (
     Message,
     ReplyKeyboardMarkup, KeyboardButton,
@@ -28,10 +29,10 @@ from parser import (
     parse_weight_delta,
     parse_absolute_weight,
 )
-from sheets import Sheets, GREEN, RED
+from sheets import Sheets, GREEN, RED, normalize_uid_value
 from exporter import pdf_to_jpeg
 from state import (
-    mark_active, mark_excused, get_sets, save_mention,
+    mark_active, mark_excused, get_sets, save_mention, save_user, get_users,
     set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until, remove_excused
 )
 
@@ -121,6 +122,60 @@ async def report_now(m: Message):
     await report(m.chat.id)
     await m.reply("✅ Отчёт отправлен.")
 
+@dp.message(Command("dump_users"))
+async def dump_users(m: Message):
+    if not m.from_user:
+        return
+
+    if m.from_user.id not in ADMIN_IDS:
+        await m.reply("⛔ У тебя нет доступа к этой команде.")
+        return
+
+    command_parts = (m.text or "").split(maxsplit=1)
+    target_chat_id = m.chat.id
+
+    if m.chat.type == "private":
+        if len(command_parts) < 2:
+            await m.reply("В личке укажи chat_id группы: <code>/dump_users -1001234567890</code>")
+            return
+        try:
+            target_chat_id = int(command_parts[1].strip())
+        except ValueError:
+            await m.reply("Не смогла разобрать chat_id. Пример: <code>/dump_users -1001234567890</code>")
+            return
+
+    users = get_users(target_chat_id)
+    if not users:
+        await m.reply("По этой группе пока нет сохранённых user_id.")
+        return
+
+    out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = datetime.now(tz).strftime("%Y%m%d_%H%M%S")
+    dump_path = os.path.join(out_dir, f"users_{target_chat_id}_{stamp}.csv")
+
+    with open(dump_path, "w", encoding="utf-8-sig", newline="") as f:
+        f.write("user_id,username,full_name\n")
+        for uid, info in sorted(users.items(), key=lambda item: int(item[0])):
+            username = str(info.get("username", "")).replace('"', '""')
+            full_name = str(info.get("full_name", "")).replace('"', '""')
+            f.write(f'{uid},"{username}","{full_name}"\n')
+
+    try:
+        await bot.send_document(
+            m.from_user.id,
+            FSInputFile(dump_path),
+            caption=f"Выгрузка user_id для chat_id {target_chat_id}",
+        )
+    except TelegramForbiddenError:
+        await m.reply("Я не могу написать тебе в личные сообщения. Сначала открой диалог с ботом и нажми /start.")
+        return
+
+    if m.chat.type == "private":
+        await m.reply(f"Отправила файл в эту же личку для chat_id {target_chat_id}.")
+    else:
+        await m.reply("Отправила файл тебе в личные сообщения с ботом.")
+
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"\s+", " ", s)
@@ -198,12 +253,12 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 MENU_INLINE = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text=str(i), callback_data=f"menu:{i}") for i in range(1, 8)],
     [
-        InlineKeyboardButton(text="🥞 сырники", callback_data="menu:сырники"),
-        InlineKeyboardButton(text="🫓 лаваш", callback_data="menu:лаваш"),
-        InlineKeyboardButton(text="🍪 печенье", callback_data="menu:печенье"),
-        InlineKeyboardButton(text="🍇 виноград", callback_data="menu:виноград"),
-        InlineKeyboardButton(text="🍌 банан", callback_data="menu:банан"),
-        InlineKeyboardButton(text="🥬 свекла", callback_data="menu:свекла"),
+        InlineKeyboardButton(text="🥞 сырники", callback_data="menu:syrniki"),
+        InlineKeyboardButton(text="🫓 лаваш", callback_data="menu:lavash"),
+        InlineKeyboardButton(text="🍪 печенье", callback_data="menu:cookie"),
+        InlineKeyboardButton(text="🍇 виноград", callback_data="menu:grape"),
+        InlineKeyboardButton(text="🍌 банан", callback_data="menu:banana"),
+        InlineKeyboardButton(text="🥬 свекла", callback_data="menu:beet"),
     ],
 ])
 
@@ -215,12 +270,12 @@ MENU_FILES = {
     "5": "menu_5.jpg",
     "6": "menu_6.jpg",
     "7": "menu_7.jpg",
-    "виноград": "vinograd.jpeg",
-    "банан": "banana.jpeg",
-    "свекла": "svekla.jpeg",
-    "сырники": "сырники.jpg",
-    "лаваш": "Лаваш.jpg",
-    "печенье": "Печенье.jpg",
+    "grape": "vinograd.jpeg",
+    "banana": "banana.jpeg",
+    "beet": "svekla.jpeg",
+    "syrniki": "сырники.jpg",
+    "lavash": "Лаваш.jpg",
+    "cookie": "Печенье.jpg",
 }
 
 def find_asset(filename: str) -> str | None:
@@ -356,6 +411,7 @@ async def report_handler(m: Message):
     chat_id = m.chat.id
     sc = get_sc(chat_id)
     save_mention(chat_id, uid, mention)
+    save_user(chat_id, uid, getattr(m.from_user, "username", None), getattr(m.from_user, "full_name", None))
 
     meal_marks = extract_meal_marks(text, hour=hour)
 
@@ -389,6 +445,7 @@ async def report_handler(m: Message):
             row = new_row
 
     if row is None:
+        print(f"UID not found in sheet: chat_id={chat_id}, uid={uid}, text={text!r}")
         return
 
     delta = parse_weight_delta(text)
@@ -458,7 +515,10 @@ async def report(chat_id: int):
         if len(r) <= 9 or not str(r[9]).strip():
             continue
 
-        uid = int(str(r[9]).strip())
+        uid_raw = normalize_uid_value(r[9])
+        if not uid_raw:
+            continue
+        uid = int(uid_raw)
 
         def cell_val(letter: str) -> str:
             idx = MEAL_IDX[letter]
@@ -502,7 +562,10 @@ async def lunch_ping(chat_id: int):
         if len(r) <= 9 or not str(r[9]).strip():
             continue
 
-        uid = int(str(r[9]).strip())
+        uid_raw = normalize_uid_value(r[9])
+        if not uid_raw:
+            continue
+        uid = int(uid_raw)
         if is_excused_today(chat_id, uid):
             continue
 

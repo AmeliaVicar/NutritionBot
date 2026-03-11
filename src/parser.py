@@ -181,7 +181,7 @@ def extract_meal_marks(text: str, hour: int | None = None) -> list[tuple[str, st
             continue
 
         for idx, match in enumerate(matches):
-            snippet_start = match.start()
+            snippet_start = 0 if idx == 0 else matches[idx - 1].end()
             snippet_end = len(normalized_part) if idx + 1 == len(matches) else matches[idx + 1].start()
             snippet = normalized_part[snippet_start:snippet_end]
             meal = detect_meal(snippet, hour=part_hour)

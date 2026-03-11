@@ -25,6 +25,26 @@ TOTAL_COLS = 11  # A..K
 UID_COL_LETTER = "J"
 UID_INDEX = 9  # A=0 -> J=9
 
+
+def normalize_uid_value(value) -> str:
+    raw = str(value or "").strip().lstrip("'")
+    if not raw:
+        return ""
+
+    if raw.isdigit():
+        return raw
+
+    try:
+        numeric = float(raw.replace(",", "."))
+    except ValueError:
+        digits_only = "".join(ch for ch in raw if ch.isdigit())
+        return digits_only
+
+    if numeric.is_integer():
+        return str(int(numeric))
+    return raw
+
+
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"\s+", " ", s)
@@ -215,9 +235,15 @@ class Sheets:
         return pdf_path
 
     def find_row_by_uid(self, uid: int) -> Optional[int]:
+        target_uid = normalize_uid_value(uid)
+        if not target_uid:
+            return None
+
         rows = self.rows()
         for idx, r in enumerate(rows, start=2):
-            if len(r) > UID_INDEX and str(r[UID_INDEX]).strip() == str(uid):
+            if len(r) <= UID_INDEX:
+                continue
+            if normalize_uid_value(r[UID_INDEX]) == target_uid:
                 return idx
         return None
 
