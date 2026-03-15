@@ -67,8 +67,18 @@ MEAL_REPORT_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+BOTH_SNACKS_SKIP_RE = re.compile(
+    r"\b(?:\u043f\u0435\u0440\u0435\u043a\u0443\u0441\u043e\u0432|\u043e\u0431\u043e\u0438\u0445\s+\u043f\u0435\u0440\u0435\u043a\u0443\u0441\w*)\b",
+    re.IGNORECASE,
+)
+
 WEIGHT_DELTA_RE = re.compile(
     r"(?<![\d.])(?P<sign>\u043f\u043b\u044e\u0441|\u043c\u0438\u043d\u0443\u0441|[+-])\s*(?P<value>\d+(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+
+SAME_WEIGHT_RE = re.compile(
+    r"\b(?:\u0432\u0435\u0441\s+(?:\u0442\u043e\u0442|\u0442\u0430\u043a\u043e\u0439)\s+\u0436\u0435|(?:\u0442\u043e\u0442|\u0442\u0430\u043a\u043e\u0439)\s+\u0436\u0435\s+\u0432\u0435\u0441)\b",
     re.IGNORECASE,
 )
 
@@ -178,6 +188,11 @@ def extract_meal_marks(text: str, hour: int | None = None) -> list[tuple[str, st
         part_hour = explicit_hour if explicit_hour is not None else hour
         matches = list(MEAL_MATCH_RE.finditer(normalized_part))
 
+        if is_skip(part) and BOTH_SNACKS_SKIP_RE.search(normalized_part):
+            marks.append(("snack1", "-"))
+            marks.append(("snack2", "-"))
+            continue
+
         if not matches:
             meal = detect_meal(part, hour=part_hour)
             if meal:
@@ -230,6 +245,8 @@ def parse_weight_delta(text: str) -> Optional[float]:
     if _has_weight_meta(t):
         return None
     if re.fullmatch(r"0(?:\.0+)?", t):
+        return 0.0
+    if SAME_WEIGHT_RE.search(t):
         return 0.0
 
     match = WEIGHT_DELTA_RE.search(t)

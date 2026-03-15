@@ -33,6 +33,9 @@ class WeightParserCasesTests(unittest.TestCase):
         self.assertEqual(parse_weight_delta("+200"), 0.2)
         self.assertEqual(parse_weight_delta("плюс 200"), 0.2)
         self.assertEqual(parse_weight_delta("+0,2"), 0.2)
+        self.assertEqual(parse_weight_delta("вес тот же"), 0.0)
+        self.assertEqual(parse_weight_delta("тот же вес"), 0.0)
+        self.assertTrue(looks_like_weight_report("вес тот же"))
 
     def test_explicit_weight_does_not_take_delta_or_date_as_weight(self):
         self.assertIsNone(parse_explicit_weight("Соколова минус 300"))
