@@ -26,8 +26,8 @@ from parser import (
     looks_like_meal_report,
     looks_like_weight_report,
     extract_meal_marks,
+    parse_explicit_weight,
     parse_weight_delta,
-    parse_absolute_weight,
 )
 from sheets import Sheets, GREEN, RED, normalize_uid_value
 from exporter import pdf_to_jpeg
@@ -88,6 +88,14 @@ MEAL_TO_COL = {
 def get_msg_text(m: Message) -> str:
     # важно: caption тоже читаем
     return (m.text or m.caption or "").strip()
+
+
+def parse_sheet_weight(raw_value) -> float | None:
+    try:
+        value = float(str(raw_value).replace(",", "."))
+    except Exception:
+        return None
+    return value if 30 <= value <= 200 else None
 
 def looks_like_weight_or_delta(text: str) -> bool:
     return looks_like_weight_report(text)
@@ -424,7 +432,7 @@ async def report_handler(m: Message):
             mark_excused(chat_id, uid)
             await m.reply("Ок, принял. Сегодня отмечу зелёным ✅")
 
-        if not meal_marks and parse_weight_delta(text) is None and parse_absolute_weight(text) is None:
+        if not meal_marks and parse_weight_delta(text) is None and parse_explicit_weight(text) is None:
             return
 
     row = sc.find_row_by_uid(uid)
@@ -449,32 +457,53 @@ async def report_handler(m: Message):
         return
 
     delta = parse_weight_delta(text)
-    abs_w = parse_absolute_weight(text)
+    explicit_weight = parse_explicit_weight(text)
+    prev_raw = sc.get_cell(f"B{row}") if explicit_weight is not None or delta is not None else None
+    prev = parse_sheet_weight(prev_raw) if prev_raw is not None else None
+    final_weight = None
 
-    if abs_w is not None:
-        prev_raw = sc.get_cell(f"B{row}")
-        sc.write(row, "B", abs_w)
-        try:
-            prev = float(str(prev_raw).replace(",", "."))
-            diff = round(abs_w - prev, 3)
-            sc.write(row, "C", diff if abs(diff) <= 5 else "")
-        except Exception:
-            sc.write(row, "C", "")
-        mark_active(chat_id, uid)
-
-    elif delta is not None:
-        prev_raw = sc.get_cell(f"B{row}")
-        try:
-            prev = float(str(prev_raw).replace(",", "."))
-        except Exception:
-            prev = None
+    if explicit_weight is not None:
+        final_weight = explicit_weight
+        sc.write(row, "B", explicit_weight)
 
         if prev is not None:
-            new_weight = round(prev + delta, 3)
-            if 30 <= new_weight <= 200:
-                sc.write(row, "B", new_weight)
-                sc.write(row, "C", delta)
-                mark_active(chat_id, uid)
+            diff = round(explicit_weight - prev, 3)
+            sc.write(row, "C", diff if abs(diff) <= 5 else "")
+
+            if delta is not None and abs(diff - delta) > 0.05:
+                print(
+                    "WEIGHT_DELTA_MISMATCH",
+                    "uid=", uid,
+                    "text=", text,
+                    "reported_delta=", delta,
+                    "calculated_delta=", diff,
+                    "prev=", prev_raw,
+                    "row=", row,
+                )
+        else:
+            sc.write(row, "C", "")
+
+        mark_active(chat_id, uid)
+
+    elif delta is not None and prev is not None:
+        new_weight = round(prev + delta, 3)
+        if 30 <= new_weight <= 200:
+            final_weight = new_weight
+            sc.write(row, "B", new_weight)
+            sc.write(row, "C", delta)
+            mark_active(chat_id, uid)
+
+    if explicit_weight is not None or delta is not None:
+        print(
+            "WEIGHT_DEBUG",
+            "uid=", uid,
+            "text=", text,
+            "explicit_weight=", explicit_weight,
+            "delta=", delta,
+            "prev=", prev_raw,
+            "final=", final_weight,
+            "row=", row,
+        )
 
     seen_meals = set()
     for meal, mark in meal_marks:

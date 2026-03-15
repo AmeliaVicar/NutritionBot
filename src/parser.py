@@ -28,9 +28,9 @@ SKIP_PATTERNS = [
 ]
 
 MEAL_WORD_PATTERNS = {
-    "breakfast": r"\b\u0437\u0430\u0432\u0442\u0440\u0430\u043a\w*\b",
-    "lunch": r"\b\u043e\u0431\u0435\u0434\w*\b",
-    "dinner": r"\b\u0443\u0436\u0438\u043d\w*\b",
+    "breakfast": r"\b(?:\u043f\u043e)?\u0437\u0430\u0432\u0442\u0440\u0430\u043a\w*\b",
+    "lunch": r"\b(?:\u043f\u043e)?\u043e\u0431\u0435\u0434\w*\b",
+    "dinner": r"\b(?:\u043f\u043e)?\u0443\u0436\u0438\u043d\w*\b",
 }
 
 WEIGHT_META_WORDS = [
@@ -50,9 +50,9 @@ _MEAL_TOKEN = (
     r"(?:[12]\s*)?\u043f\u0435\u0440\u0435\u043a\u0443\u0441\w*|"
     r"(?:\u043f\u0435\u0440\u0432\w+|\u0432\u0442\u043e\u0440\w+)\s+\u043f\u0435\u0440\u0435\u043a\u0443\u0441\w*|"
     r"\u043e\u0431\u043e\u0438\u0445\s+\u043f\u0435\u0440\u0435\u043a\u0443\u0441\w*|"
-    r"\u0437\u0430\u0432\u0442\u0440\u0430\u043a\w*|"
-    r"\u043e\u0431\u0435\u0434\w*|"
-    r"\u0443\u0436\u0438\u043d\w*"
+    r"(?:\u043f\u043e)?\u0437\u0430\u0432\u0442\u0440\u0430\u043a\w*|"
+    r"(?:\u043f\u043e)?\u043e\u0431\u0435\u0434\w*|"
+    r"(?:\u043f\u043e)?\u0443\u0436\u0438\u043d\w*"
 )
 
 MEAL_MATCH_RE = re.compile(_MEAL_TOKEN, re.IGNORECASE)
@@ -67,10 +67,32 @@ MEAL_REPORT_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+WEIGHT_DELTA_RE = re.compile(
+    r"(?<![\d.])(?P<sign>\u043f\u043b\u044e\u0441|\u043c\u0438\u043d\u0443\u0441|[+-])\s*(?P<value>\d+(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+
+EXPLICIT_WEIGHT_RE = re.compile(
+    r"(?<![\d.])(?P<value>\d{2,3}(?:\.\d{1,3})?)(?!\.\d)(?!\d)"
+)
+
+NON_WEIGHT_NUMBER_SUFFIX_RE = re.compile(
+    r"^\s*(?:\u0433\u0440\b|\u0433\u0440\u0430\u043c\w*\b|\u043a\u043a\u0430\u043b\b|\u043a\u0430\u043b\b|\u0441\u043c\b|\u043c\u043c\b|\u043c\u0438\u043d\b|\u0447\u0430\u0441\w*\b|\u0434\u043d\w*\b|\u0434\u0435\u043d\u044c\b|\u0434\u043d\u044f\b|\u043b\u0435\u0442\b|\u0433\u043e\u0434\w*\b)"
+)
+
 
 def normalize(text: str) -> str:
     text = text.lower().replace("\u0451", "\u0435")
     return re.sub(r"\s+", " ", text.strip())
+
+
+def normalize_weight_text(text: str) -> str:
+    t = normalize(text)
+    t = t.replace("\u2212", "-").replace("\u2013", "-").replace("\u2014", "-")
+    t = re.sub(r"(?<=\d),(?=\d)", ".", t)
+    t = re.sub(r"[;,]+", " ", t)
+    t = re.sub(r"([+-])\s+(?=\d)", r"\1", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 
 def is_excuse(text: str) -> bool:
@@ -194,29 +216,30 @@ def extract_meal_marks(text: str, hour: int | None = None) -> list[tuple[str, st
 
 def late_message(meal: str, hour: int, minute: int) -> Optional[str]:
     total = hour * 60 + minute
-    if meal == "snack1" and total > 11 * 60:
+    if meal == "snack1" and total >= 11 * 60 + 10:
         return "\u26a0\ufe0f \u041f\u0435\u0440\u0432\u044b\u0439 \u043f\u0435\u0440\u0435\u043a\u0443\u0441 \u2014 \u0434\u043e 11:00."
-    if meal == "lunch" and total > 14 * 60:
+    if meal == "lunch" and 14 * 60 + 10 <= total <= 16 * 60:
         return "\u26a0\ufe0f \u041e\u0431\u0435\u0434 \u2014 \u0434\u043e 14:00."
-    if meal == "snack2" and total > 16 * 60:
+    if meal == "snack2" and 16 * 60 + 10 <= total <= 18 * 60:
         return "\u26a0\ufe0f \u0412\u0442\u043e\u0440\u043e\u0439 \u043f\u0435\u0440\u0435\u043a\u0443\u0441 \u2014 \u0434\u043e 16:00."
     return None
 
 
 def parse_weight_delta(text: str) -> Optional[float]:
-    t = normalize(text).replace(",", ".")
+    t = normalize_weight_text(text)
     if _has_weight_meta(t):
         return None
     if re.fullmatch(r"0(?:\.0+)?", t):
         return 0.0
 
-    match = re.search(r"(\u043f\u043b\u044e\u0441|\u043c\u0438\u043d\u0443\u0441|\+|-)\s*(\d+(?:\.\d+)?)", t)
+    match = WEIGHT_DELTA_RE.search(t)
     if not match:
         return None
 
-    sign = -1 if match.group(1) in ("-", "\u043c\u0438\u043d\u0443\u0441") else 1
-    value = float(match.group(2))
-    if "\u0433\u0440" in t or "\u0433\u0440\u0430\u043c" in t or value >= 10:
+    sign = -1 if match.group("sign") in ("-", "\u043c\u0438\u043d\u0443\u0441") else 1
+    value = float(match.group("value"))
+    tail = t[match.end("value"):match.end("value") + 12]
+    if re.match(r"^\s*(?:\u0433\u0440\b|\u0433\u0440\u0430\u043c\w*\b)", tail) or value >= 10:
         value = value / 1000
 
     delta = round(sign * value, 3)
@@ -225,24 +248,43 @@ def parse_weight_delta(text: str) -> Optional[float]:
     return delta
 
 
-def parse_absolute_weight(text: str) -> Optional[float]:
-    t = normalize(text).replace(",", ".")
+def _looks_like_date_fragment(raw_value: str) -> bool:
+    if "." not in raw_value:
+        return False
+    integer_part, fractional_part = raw_value.split(".", 1)
+    return len(fractional_part) == 2 and int(integer_part) <= 31
+
+
+def parse_explicit_weight(text: str) -> Optional[float]:
+    t = normalize_weight_text(text)
     if _has_weight_meta(t):
-        return None
-    if any(token in t for token in ["+", "-", "\u043c\u0438\u043d\u0443\u0441", "\u043f\u043b\u044e\u0441", "\u0433\u0440", "\u0433\u0440\u0430\u043c"]):
         return None
     if any(re.search(pattern, t) for pattern in list(MEAL_WORD_PATTERNS.values()) + [r"\b\u043f\u0435\u0440\u0435\u043a\u0443\u0441\w*\b"]):
         return None
 
-    has_weight_word = bool(re.search(r"\b\u0432\u0435\u0441\b", t))
-    if not has_weight_word and not re.fullmatch(r"\d{2,3}(?:\.\d{1,3})?", t):
-        return None
+    delta_matches = list(WEIGHT_DELTA_RE.finditer(t))
 
-    match = re.search(r"\b(\d{2,3}(?:\.\d{1,3})?)\b", t)
-    if not match:
-        return None
+    for match in EXPLICIT_WEIGHT_RE.finditer(t):
+        value_start = match.start("value")
+        value_end = match.end("value")
 
-    value = float(match.group(1))
-    if 30 <= value <= 200:
-        return round(value, 3)
+        if any(delta.start("value") <= value_start < delta.end("value") for delta in delta_matches):
+            continue
+
+        raw_value = match.group("value")
+        if _looks_like_date_fragment(raw_value):
+            continue
+
+        tail = t[value_end:value_end + 16]
+        if NON_WEIGHT_NUMBER_SUFFIX_RE.match(tail):
+            continue
+
+        value = float(raw_value)
+        if 30 <= value <= 200:
+            return round(value, 3)
+
     return None
+
+
+def parse_absolute_weight(text: str) -> Optional[float]:
+    return parse_explicit_weight(text)
