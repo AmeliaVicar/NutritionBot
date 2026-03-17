@@ -27,6 +27,7 @@ from parser import (
     looks_like_weight_report,
     extract_meal_marks,
     parse_explicit_weight,
+    parse_sheet_weight,
     parse_weight_delta,
 )
 from sheets import Sheets, GREEN, RED, normalize_uid_value
@@ -89,13 +90,6 @@ def get_msg_text(m: Message) -> str:
     # важно: caption тоже читаем
     return (m.text or m.caption or "").strip()
 
-
-def parse_sheet_weight(raw_value) -> float | None:
-    try:
-        value = float(str(raw_value).replace(",", "."))
-    except Exception:
-        return None
-    return value if 30 <= value <= 200 else None
 
 def looks_like_weight_or_delta(text: str) -> bool:
     return looks_like_weight_report(text)
@@ -345,13 +339,16 @@ async def report_rules(m: Message):
         "➡️ В таблице ставится минус (-)\n"
         "\n"
         "⚖️ <b>ВЕС</b>\n"
-        "Если пишете разницу от вчера:\n"
-        "Сунко -1.35\n"
-        "Сунко минус 300\n"
-        "Сунко плюс 200\n"
+        "Любое сообщение про вес пишем обязательно со словом “вес”, иначе бот его не обработает:\n"
+        "Сунко вес 80.0\n"
+        "Сунко вес минус 300\n"
+        "Сунко вес плюс 200\n"
+        "Сунко вес -1,000\n"
+        "Сунко вес +0,400\n"
         "\n"
-        "Если первый/абсолютный вес — обязательно со словами “первый вес”:\n"
-        "Сунко первый вес 80.0\n"
+        "➡️ Абсолютный вес: Сунко вес 80.0\n"
+        "➡️ Разница от вчера: Сунко вес минус 300\n"
+        "➡️ Если вес без изменений: Сунко вес тот же\n"
         "\n"
         "🌿 <b>ЕСЛИ СЕГОДНЯ БЕЗ ОТЧЁТОВ</b>\n"
         "Сегодня без отчётов\n"
@@ -458,51 +455,149 @@ async def report_handler(m: Message):
 
     delta = parse_weight_delta(text)
     explicit_weight = parse_explicit_weight(text)
-    prev_raw = sc.get_cell(f"B{row}") if explicit_weight is not None or delta is not None else None
-    prev = parse_sheet_weight(prev_raw) if prev_raw is not None else None
-    final_weight = None
+    weight_message = explicit_weight is not None or delta is not None
+    sheet_name = GROUPS[chat_id]["SHEET_NAME"] if weight_message else None
+    row_uid_raw = sc.get_cell(f"J{row}") if weight_message else None
+    row_name = sc.get_cell(f"A{row}") if weight_message else None
+    row_uid = normalize_uid_value(row_uid_raw) if weight_message else ""
+    expected_uid = normalize_uid_value(uid) if weight_message else ""
+    prev_raw = sc.get_cell(f"B{row}") if weight_message else None
+    prev = parse_sheet_weight(prev_raw) if weight_message else None
+    new_weight = None
+
+    if weight_message:
+        print(
+            "ROW_DEBUG",
+            "uid=", uid,
+            "row=", row,
+            "row_uid=", row_uid_raw,
+            "row_name=", row_name,
+        )
+
+        if row_uid != expected_uid:
+            print(
+                "WEIGHT_WARN",
+                "reason=", "row_uid_mismatch",
+                "chat_id=", chat_id,
+                "sheet_name=", sheet_name,
+                "uid=", uid,
+                "row=", row,
+                "row_uid=", row_uid_raw,
+                "row_name=", row_name,
+                "text=", text,
+            )
+            return
 
     if explicit_weight is not None:
-        final_weight = explicit_weight
+        new_weight = explicit_weight
         sc.write(row, "B", explicit_weight)
 
         if prev is not None:
             diff = round(explicit_weight - prev, 3)
-            sc.write(row, "C", diff if abs(diff) <= 5 else "")
+            if abs(diff) <= 5:
+                sc.write(row, "C", diff)
+            else:
+                sc.write(row, "C", "")
+                print(
+                    "WEIGHT_WARN",
+                    "reason=", "explicit_diff_too_large",
+                    "chat_id=", chat_id,
+                    "sheet_name=", sheet_name,
+                    "uid=", uid,
+                    "row=", row,
+                    "row_uid=", row_uid_raw,
+                    "row_name=", row_name,
+                    "prev=", prev,
+                    "new=", explicit_weight,
+                    "diff=", diff,
+                    "text=", text,
+                )
 
             if delta is not None and abs(diff - delta) > 0.05:
                 print(
                     "WEIGHT_DELTA_MISMATCH",
+                    "chat_id=", chat_id,
+                    "sheet_name=", sheet_name,
                     "uid=", uid,
+                    "row=", row,
+                    "row_uid=", row_uid_raw,
+                    "row_name=", row_name,
                     "text=", text,
                     "reported_delta=", delta,
                     "calculated_delta=", diff,
                     "prev=", prev_raw,
-                    "row=", row,
                 )
         else:
             sc.write(row, "C", "")
 
         mark_active(chat_id, uid)
 
-    elif delta is not None and prev is not None:
-        new_weight = round(prev + delta, 3)
-        if 30 <= new_weight <= 200:
-            final_weight = new_weight
-            sc.write(row, "B", new_weight)
-            sc.write(row, "C", delta)
-            mark_active(chat_id, uid)
+    elif delta is not None:
+        if prev is None:
+            print(
+                "WEIGHT_WARN",
+                "reason=", "missing_previous_weight",
+                "chat_id=", chat_id,
+                "sheet_name=", sheet_name,
+                "uid=", uid,
+                "row=", row,
+                "row_uid=", row_uid_raw,
+                "row_name=", row_name,
+                "text=", text,
+            )
+        else:
+            candidate_weight = round(prev + delta, 3)
+            if not 30 <= candidate_weight <= 200:
+                print(
+                    "WEIGHT_WARN",
+                    "reason=", "delta_new_weight_out_of_range",
+                    "chat_id=", chat_id,
+                    "sheet_name=", sheet_name,
+                    "uid=", uid,
+                    "row=", row,
+                    "row_uid=", row_uid_raw,
+                    "row_name=", row_name,
+                    "prev=", prev,
+                    "delta=", delta,
+                    "new=", candidate_weight,
+                    "text=", text,
+                )
+            elif abs(candidate_weight - prev) > 5:
+                print(
+                    "WEIGHT_WARN",
+                    "reason=", "delta_diff_too_large",
+                    "chat_id=", chat_id,
+                    "sheet_name=", sheet_name,
+                    "uid=", uid,
+                    "row=", row,
+                    "row_uid=", row_uid_raw,
+                    "row_name=", row_name,
+                    "prev=", prev,
+                    "delta=", delta,
+                    "new=", candidate_weight,
+                    "text=", text,
+                )
+            else:
+                new_weight = candidate_weight
+                sc.write(row, "B", candidate_weight)
+                sc.write(row, "C", delta)
+                mark_active(chat_id, uid)
 
-    if explicit_weight is not None or delta is not None:
+    if weight_message:
         print(
             "WEIGHT_DEBUG",
+            "chat_id=", chat_id,
+            "sheet_name=", sheet_name,
             "uid=", uid,
+            "row=", row,
+            "row_uid=", row_uid_raw,
+            "row_name=", row_name,
             "text=", text,
+            "prev_raw=", repr(prev_raw),
+            "prev_parsed=", prev,
             "explicit_weight=", explicit_weight,
             "delta=", delta,
-            "prev=", prev_raw,
-            "final=", final_weight,
-            "row=", row,
+            "new_weight=", new_weight if delta is not None else explicit_weight,
         )
 
     seen_meals = set()

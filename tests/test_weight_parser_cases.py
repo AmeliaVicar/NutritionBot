@@ -12,10 +12,13 @@ from parser import (
 
 
 class WeightParserCasesTests(unittest.TestCase):
-    def test_explicit_weight_accepts_mixed_text_and_comma(self):
-        self.assertEqual(parse_explicit_weight("75,6"), 75.6)
-        self.assertEqual(parse_explicit_weight("Соколова 75,6"), 75.6)
+    def test_explicit_weight_requires_weight_word(self):
+        self.assertIsNone(parse_explicit_weight("75,6"))
+        self.assertIsNone(parse_explicit_weight("Соколова 75,6"))
+        self.assertFalse(looks_like_weight_report("Соколова 75,6"))
+        self.assertEqual(parse_explicit_weight("Соколова вес 75,6"), 75.6)
         self.assertEqual(parse_explicit_weight("фото не грузится, вес 75,6"), 75.6)
+        self.assertTrue(looks_like_weight_report("Соколова вес 75,6"))
         self.assertTrue(looks_like_weight_report("фото не грузится, вес 75,6"))
 
     def test_explicit_weight_wins_in_combined_message(self):
@@ -25,17 +28,20 @@ class WeightParserCasesTests(unittest.TestCase):
         self.assertEqual(parse_weight_delta(text), -0.3)
         self.assertTrue(looks_like_weight_report(text))
 
-    def test_weight_delta_variants(self):
-        self.assertEqual(parse_weight_delta("-300"), -0.3)
-        self.assertEqual(parse_weight_delta("- 300"), -0.3)
-        self.assertEqual(parse_weight_delta("минус 300"), -0.3)
-        self.assertEqual(parse_weight_delta("минус 0.3"), -0.3)
-        self.assertEqual(parse_weight_delta("+200"), 0.2)
-        self.assertEqual(parse_weight_delta("плюс 200"), 0.2)
-        self.assertEqual(parse_weight_delta("+0,2"), 0.2)
+    def test_weight_delta_variants_require_weight_word(self):
+        self.assertEqual(parse_weight_delta("вес -300"), -0.3)
+        self.assertEqual(parse_weight_delta("вес - 300"), -0.3)
+        self.assertEqual(parse_weight_delta("вес минус 300"), -0.3)
+        self.assertEqual(parse_weight_delta("вес минус 0.3"), -0.3)
+        self.assertEqual(parse_weight_delta("вес +200"), 0.2)
+        self.assertEqual(parse_weight_delta("вес плюс 200"), 0.2)
+        self.assertEqual(parse_weight_delta("вес +0,2"), 0.2)
         self.assertEqual(parse_weight_delta("вес тот же"), 0.0)
         self.assertEqual(parse_weight_delta("тот же вес"), 0.0)
         self.assertTrue(looks_like_weight_report("вес тот же"))
+        self.assertIsNone(parse_weight_delta("минус 300"))
+        self.assertIsNone(parse_weight_delta("+200"))
+        self.assertFalse(looks_like_weight_report("минус 300"))
 
     def test_explicit_weight_does_not_take_delta_or_date_as_weight(self):
         self.assertIsNone(parse_explicit_weight("Соколова минус 300"))

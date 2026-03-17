@@ -105,6 +105,30 @@ def normalize_weight_text(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def parse_sheet_weight(raw_value) -> Optional[float]:
+    if raw_value is None:
+        return None
+
+    s = str(raw_value).strip()
+    if not s:
+        return None
+
+    s = s.lstrip("'").strip()
+    if not s or s.startswith("="):
+        return None
+
+    s = s.replace(",", ".")
+    if s.count(".") > 1:
+        return None
+
+    try:
+        value = float(s)
+    except Exception:
+        return None
+
+    return value if 30 <= value <= 200 else None
+
+
 def is_excuse(text: str) -> bool:
     t = normalize(text)
     return any(word in t for word in EXCUSE_WORDS)
@@ -153,9 +177,7 @@ def looks_like_weight_report(text: str) -> bool:
     t = normalize(text)
     if not t or "?" in t or _has_weight_meta(t):
         return False
-    if parse_weight_delta(t) is not None or parse_absolute_weight(t) is not None:
-        return True
-    return bool(re.fullmatch(r"\d{2,3}(?:\.\d{1,3})?", t))
+    return parse_weight_delta(t) is not None or parse_absolute_weight(t) is not None
 
 
 def detect_meal(text: str, hour: int | None = None) -> Optional[str]:
@@ -244,6 +266,8 @@ def parse_weight_delta(text: str) -> Optional[float]:
     t = normalize_weight_text(text)
     if _has_weight_meta(t):
         return None
+    if not re.search(r"\b\u0432\u0435\u0441\b", t):
+        return None
     if re.fullmatch(r"0(?:\.0+)?", t):
         return 0.0
     if SAME_WEIGHT_RE.search(t):
@@ -254,10 +278,18 @@ def parse_weight_delta(text: str) -> Optional[float]:
         return None
 
     sign = -1 if match.group("sign") in ("-", "\u043c\u0438\u043d\u0443\u0441") else 1
-    value = float(match.group("value"))
+    raw_value = match.group("value")
+    value = float(raw_value)
     tail = t[match.end("value"):match.end("value") + 12]
-    if re.match(r"^\s*(?:\u0433\u0440\b|\u0433\u0440\u0430\u043c\w*\b)", tail) or value >= 10:
+    has_gram_suffix = bool(re.match(r"^\s*(?:\u0433\u0440\b|\u0433\u0440\u0430\u043c\w*\b)", tail))
+
+    if has_gram_suffix:
         value = value / 1000
+    elif "." not in raw_value:
+        if 50 <= abs(value) <= 1500:
+            value = value / 1000
+        else:
+            return None
 
     delta = round(sign * value, 3)
     if abs(delta) > 5:
@@ -277,6 +309,8 @@ def parse_explicit_weight(text: str) -> Optional[float]:
     if _has_weight_meta(t):
         return None
     if any(re.search(pattern, t) for pattern in list(MEAL_WORD_PATTERNS.values()) + [r"\b\u043f\u0435\u0440\u0435\u043a\u0443\u0441\w*\b"]):
+        return None
+    if not re.search(r"\b\u0432\u0435\u0441\b", t):
         return None
 
     delta_matches = list(WEIGHT_DELTA_RE.finditer(t))
