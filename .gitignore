@@ -214,3 +214,28 @@ __pycache__/
 out/
 .idea/
 *.pyc
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local runtime files
+src/config.py
+src/state.json
+
+# Secrets
+.env
+service_account.json
+
+# Logs / temp
+logs/
+*.log
+out/
+src/out/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
