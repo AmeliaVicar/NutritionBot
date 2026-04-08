@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import traceback
 from datetime import datetime
 
 import pytz
@@ -32,6 +33,7 @@ from parser import (
 )
 from sheets import Sheets, GREEN, RED, normalize_uid_value
 from exporter import pdf_to_jpeg
+from schedule_utils import staggered_daily_time
 from state import (
     mark_active, mark_excused, get_sets, save_mention, save_user, get_users,
     set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until, remove_excused
@@ -62,6 +64,11 @@ def is_admin(chat_id: int, uid: int) -> bool:
     return uid in admins
 
 tz = pytz.timezone(TZ)
+
+REPORT_HOUR = 20
+REPORT_MINUTE = 0
+REPORT_STAGGER_MINUTES = 3
+REPORT_MISFIRE_GRACE_SECONDS = 10 * 60
 
 ASSETS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -674,6 +681,16 @@ async def report(chat_id: int):
 # -------------------------
 # Пинг по обеду: только тем, у кого реально пусто
 # -------------------------
+async def scheduled_report(chat_id: int):
+    try:
+        print(f"Scheduled report started: chat_id={chat_id}")
+        await report(chat_id)
+        print(f"Scheduled report finished: chat_id={chat_id}")
+    except Exception:
+        print(f"Scheduled report failed: chat_id={chat_id}")
+        traceback.print_exc()
+
+
 async def lunch_ping(chat_id: int):
     cleanup_expired_excused_until(chat_id)
 
@@ -717,7 +734,7 @@ async def main():
 
     scheduler = AsyncIOScheduler(timezone=tz)
 
-    for chat_id, cfg in GROUPS.items():
+    for index, (chat_id, _cfg) in enumerate(GROUPS.items()):
         # Пинг по обеду
         scheduler.add_job(
             lunch_ping, "cron",
@@ -728,12 +745,19 @@ async def main():
         )
 
         # Отчёт вечером
+        report_hour, report_minute = staggered_daily_time(
+            index,
+            base_hour=REPORT_HOUR,
+            base_minute=REPORT_MINUTE,
+            step_minutes=REPORT_STAGGER_MINUTES,
+        )
         scheduler.add_job(
-            report, "cron",
-            hour=20, minute=0,
+            scheduled_report, "cron",
+            hour=report_hour, minute=report_minute,
             args=[chat_id],
             id=f"daily_report_{chat_id}",
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=REPORT_MISFIRE_GRACE_SECONDS
         )
 
     scheduler.start()
