@@ -185,6 +185,47 @@ async def dump_users(m: Message):
     else:
         await m.reply("Отправила файл тебе в личные сообщения с ботом.")
 
+PING_RED_TEXT = """
+<a href="tg://user?id=5279334155">Алтухова Марина</a>
+<a href="tg://user?id=2100715616">Арзуманян Лиана</a>
+<a href="tg://user?id=5115459415">Бабаян Гаяна</a>
+<a href="tg://user?id=1669980170">Бадрудинова Оксана</a>
+<a href="tg://user?id=649538125">Белоусова Анастасия</a>
+<a href="tg://user?id=5185585128">Бервенюк Оля</a>
+<a href="tg://user?id=765179844">Бугрова Олеся</a>
+<a href="tg://user?id=7893797472">Гусакова Екатерина</a>
+<a href="tg://user?id=5656786633">Ива Елена</a>
+<a href="tg://user?id=8381043498">Карасова Наталья</a>
+<a href="tg://user?id=861439342">Крапивка Анастасия</a>
+<a href="tg://user?id=1715220925">Миронова Марина</a>
+<a href="tg://user?id=619951300">Новак Мария</a>
+<a href="tg://user?id=6434567306">Омарова Гюрибика</a>
+<a href="tg://user?id=1313349421">Печёнова Алёна</a>
+<a href="tg://user?id=1753865678">Побединская Ирина</a>
+<a href="tg://user?id=6773392466">Полиновская Олеся</a>
+<a href="tg://user?id=1093571023">Пучешкина Лимана</a>
+<a href="tg://user?id=8098434798">Романчук Яна</a>
+<a href="tg://user?id=666696400">Саркисова Марина</a>
+<a href="tg://user?id=2049751335">Суровцева Анна</a>
+<a href="tg://user?id=1155392295">Урих Алёна</a>
+<a href="tg://user?id=5304427052">Федюкина Наталья</a>
+<a href="tg://user?id=941749370">Христинченко Екатерина</a>
+<a href="tg://user?id=2022633639">Черемисина Мария</a>
+
+Когда в строй?
+""".strip()
+
+@dp.message(Command("pingred"))
+async def ping_red(m: Message):
+    if not m.from_user:
+        return
+
+    if m.from_user.id not in ADMIN_IDS and not is_admin(m.chat.id, m.from_user.id):
+        await m.reply("⛔️ У тебя нет доступа к этой команде.")
+        return
+
+    await m.answer(PING_RED_TEXT)
+
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"\s+", " ", s)
