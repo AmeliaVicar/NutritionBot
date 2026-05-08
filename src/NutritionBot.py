@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 import re
 import traceback
@@ -31,6 +32,7 @@ from parser import (
     parse_sheet_weight,
     parse_weight_delta,
 )
+from report_status import report_row_status, red_report_uids
 from sheets import Sheets, GREEN, RED, normalize_uid_value
 from exporter import pdf_to_jpeg
 from schedule_utils import staggered_daily_time
@@ -185,35 +187,18 @@ async def dump_users(m: Message):
     else:
         await m.reply("Отправила файл тебе в личные сообщения с ботом.")
 
-PING_RED_TEXT = """
-<a href="tg://user?id=5279334155">Алтухова Марина</a>
-<a href="tg://user?id=2100715616">Арзуманян Лиана</a>
-<a href="tg://user?id=5115459415">Бабаян Гаяна</a>
-<a href="tg://user?id=1669980170">Бадрудинова Оксана</a>
-<a href="tg://user?id=649538125">Белоусова Анастасия</a>
-<a href="tg://user?id=5185585128">Бервенюк Оля</a>
-<a href="tg://user?id=765179844">Бугрова Олеся</a>
-<a href="tg://user?id=7893797472">Гусакова Екатерина</a>
-<a href="tg://user?id=5656786633">Ива Елена</a>
-<a href="tg://user?id=8381043498">Карасова Наталья</a>
-<a href="tg://user?id=861439342">Крапивка Анастасия</a>
-<a href="tg://user?id=1715220925">Миронова Марина</a>
-<a href="tg://user?id=619951300">Новак Мария</a>
-<a href="tg://user?id=6434567306">Омарова Гюрибика</a>
-<a href="tg://user?id=1313349421">Печёнова Алёна</a>
-<a href="tg://user?id=1753865678">Побединская Ирина</a>
-<a href="tg://user?id=6773392466">Полиновская Олеся</a>
-<a href="tg://user?id=1093571023">Пучешкина Лимана</a>
-<a href="tg://user?id=8098434798">Романчук Яна</a>
-<a href="tg://user?id=666696400">Саркисова Марина</a>
-<a href="tg://user?id=2049751335">Суровцева Анна</a>
-<a href="tg://user?id=1155392295">Урих Алёна</a>
-<a href="tg://user?id=5304427052">Федюкина Наталья</a>
-<a href="tg://user?id=941749370">Христинченко Екатерина</a>
-<a href="tg://user?id=2022633639">Черемисина Мария</a>
+def mention_for_uid(uid: int, mentions: dict[str, str], users: dict[str, dict[str, str]]) -> str:
+    saved_mention = mentions.get(str(uid))
+    if saved_mention:
+        return saved_mention
 
-Когда в строй?
-""".strip()
+    user = users.get(str(uid), {})
+    username = (user.get("username") or "").strip().lstrip("@")
+    if username:
+        return f"@{username}"
+
+    full_name = html.escape((user.get("full_name") or "участник").strip() or "участник")
+    return f'<a href="tg://user?id={uid}">{full_name}</a>'
 
 @dp.message(Command("pingred"))
 async def ping_red(m: Message):
@@ -224,7 +209,22 @@ async def ping_red(m: Message):
         await m.reply("⛔️ У тебя нет доступа к этой команде.")
         return
 
-    await m.answer(PING_RED_TEXT)
+    cleanup_expired_excused_until(m.chat.id)
+
+    sc = get_sc(m.chat.id)
+    red_uids = red_report_uids(
+        sc.rows(),
+        lambda uid: is_excused_today(m.chat.id, uid),
+    )
+
+    if not red_uids:
+        await m.answer("Красных полосочек сейчас не нашла ✅")
+        return
+
+    _excused, _active, mentions, _excused_until = get_sets(m.chat.id)
+    users = get_users(m.chat.id)
+    tags = [mention_for_uid(uid, mentions, users) for uid in red_uids]
+    await m.answer("Красные полосочки в таблице, когда в строй?\n\n" + "\n".join(tags))
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -389,14 +389,8 @@ async def report_rules(m: Message):
         "⚖️ <b>ВЕС</b>\n"
         "Любое сообщение про вес пишем обязательно со словом “вес”, иначе бот его не обработает:\n"
         "Сунко вес 80.0\n"
-        "Сунко вес минус 300\n"
-        "Сунко вес плюс 200\n"
-        "Сунко вес -1,000\n"
-        "Сунко вес +0,400\n"
         "\n"
-        "➡️ Абсолютный вес: Сунко вес 80.0\n"
-        "➡️ Разница от вчера: Сунко вес минус 300\n"
-        "➡️ Если вес без изменений: Сунко вес тот же\n"
+        "➡️ Пишем только актуальный вес, разница будет просчитана автоматически\n"
         "\n"
         "🌿 <b>ЕСЛИ СЕГОДНЯ БЕЗ ОТЧЁТОВ</b>\n"
         "Сегодня без отчётов\n"
@@ -670,46 +664,21 @@ async def report(chat_id: int):
     sc = get_sc(chat_id)
     rows = sc.rows()
 
-    _excused, _active, _mentions, _excused_until = get_sets(chat_id)
-
-    MEAL_IDX = {
-        "D": 3,
-        "E": 4,
-        "F": 5,
-        "G": 6,
-        "H": 7,
-    }
-
-    ALL_MEALS = ["D", "E", "F", "G", "H"]
-    MAIN_MEALS = ["D", "F", "H"]
-
     for row_num, r in enumerate(rows, start=2):
-        if len(r) <= 9 or not str(r[9]).strip():
+        status = report_row_status(r, lambda uid: is_excused_today(chat_id, uid))
+        if status is None:
             continue
 
-        uid_raw = normalize_uid_value(r[9])
-        if not uid_raw:
-            continue
-        uid = int(uid_raw)
-
-        def cell_val(letter: str) -> str:
-            idx = MEAL_IDX[letter]
-            return str(r[idx]).strip() if len(r) > idx else ""
-
-        values = {col: cell_val(col) for col in ALL_MEALS}
-
-        has_any_food = any(v in {"+", "-"} for v in values.values())
-        if has_any_food:
-            remove_excused(chat_id, uid)
-        if is_excused_today(chat_id, uid):
+        if status.has_any_food:
+            remove_excused(chat_id, status.uid)
+        if status.is_excused:
             sc.paint_row(row_num, GREEN)
             continue
-        if not has_any_food:
+        if status.red_row:
             sc.paint_row(row_num,RED)
             continue
-        for col in MAIN_MEALS:
-            if values[col] == "":
-                sc.paint_cell(row_num, col, RED)
+        for col in status.red_cells:
+            sc.paint_cell(row_num, col, RED)
 
     pdf_path = sc.export_pdf()
     jpg_path = pdf_to_jpeg(pdf_path)
