@@ -6,10 +6,6 @@ import uuid
 import random
 from typing import Optional, List, Tuple
 
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-
 GREEN = {"red": 0.8, "green": 0.95, "blue": 0.8}
 RED   = {"red": 0.95, "green": 0.8,  "blue": 0.8}
 
@@ -24,6 +20,23 @@ TOTAL_COLS = 11  # A..K
 # UID в J
 UID_COL_LETTER = "J"
 UID_INDEX = 9  # A=0 -> J=9
+Credentials = None
+build = None
+HttpError = None
+
+
+def _load_google_api():
+    global Credentials, build, HttpError
+    if Credentials is not None:
+        return
+
+    from google.oauth2.service_account import Credentials as GoogleCredentials
+    from googleapiclient.discovery import build as google_build
+    from googleapiclient.errors import HttpError as GoogleHttpError
+
+    Credentials = GoogleCredentials
+    build = google_build
+    HttpError = GoogleHttpError
 
 
 def normalize_uid_value(value) -> str:
@@ -68,6 +81,8 @@ def _sheet_ref(title: str) -> str:
 
 class Sheets:
     def __init__(self, spreadsheet_id: str, sheet_name: str):
+        _load_google_api()
+
         if not os.path.exists(SERVICE_ACCOUNT_PATH):
             raise FileNotFoundError(f"service_account.json not found at: {SERVICE_ACCOUNT_PATH}")
 
