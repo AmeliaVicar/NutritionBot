@@ -2,7 +2,7 @@
 BOT_TOKEN = '8561683073:AAEcFqMTERW9fvwFs6_J9yLajmtJ99U7Fbo'
 GROUPS = {
     #Группа1
-    -5191218704:{
+    -1003989431400:{
         "SPREADSHEET_ID" : "1Zc6c6u5tBtmh2-dGy3JkLJhIOA1Ozuigild9vJKNtvE",
         "SHEET_NAME" : "May-Aug",
     },
