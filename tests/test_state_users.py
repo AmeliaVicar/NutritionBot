@@ -40,6 +40,31 @@ class StateUsersTests(unittest.TestCase):
 
         self.assertIn("999888", users)
 
+    def test_start_candidate_storage_marks_imported(self):
+        state_path = r"C:\NutritionBot\tests\tmp_state_users.json"
+        if os.path.exists(state_path):
+            os.remove(state_path)
+
+        try:
+            with patch.object(state, "STATE_PATH", state_path):
+                state.save_start_candidate(
+                    123,
+                    456789,
+                    "Самохина Елена",
+                    "2026-05-11",
+                    "Самохина Елена начинаю с 11.05",
+                    "2026-05-09T15:58:00+03:00",
+                )
+                state.mark_start_candidate_imported(123, 456789, "2026-05-09T16:00:00+03:00")
+                candidates = state.get_start_candidates(123)
+        finally:
+            if os.path.exists(state_path):
+                os.remove(state_path)
+
+        self.assertEqual(candidates["456789"]["full_name"], "Самохина Елена")
+        self.assertEqual(candidates["456789"]["start_date"], "2026-05-11")
+        self.assertEqual(candidates["456789"]["imported_at"], "2026-05-09T16:00:00+03:00")
+
 
 
 if __name__ == "__main__":

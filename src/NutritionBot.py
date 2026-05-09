@@ -3,7 +3,7 @@ import html
 import os
 import re
 import traceback
-from datetime import datetime
+from datetime import date, datetime
 
 import pytz
 from aiogram import Bot, Dispatcher, F
@@ -20,6 +20,12 @@ from aiogram.types import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import *
+from enrollment import (
+    existing_uids_from_rows,
+    find_row_by_candidate_name,
+    parse_start_candidate,
+    start_date_sheet_value,
+)
 from parser import (
     detect_meal,
     is_skip,
@@ -38,7 +44,8 @@ from exporter import pdf_to_jpeg
 from schedule_utils import staggered_daily_time
 from state import (
     mark_active, mark_excused, get_sets, save_mention, save_user, get_users,
-    set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until, remove_excused
+    set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until, remove_excused,
+    save_start_candidate, get_start_candidates, mark_start_candidate_imported
 )
 
 # -------------------------
@@ -200,6 +207,40 @@ def mention_for_uid(uid: int, mentions: dict[str, str], users: dict[str, dict[st
     full_name = html.escape((user.get("full_name") or "участник").strip() or "участник")
     return f'<a href="tg://user?id={uid}">{full_name}</a>'
 
+def mention_from_user(user) -> str:
+    if getattr(user, "username", None):
+        return "@" + user.username
+
+    safe_name = html.escape((getattr(user, "full_name", None) or "участник").strip() or "участник")
+    return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
+
+def remember_start_candidate(m: Message, text: str, msg_dt: datetime):
+    if m.chat.id not in GROUPS or not m.from_user or getattr(m.from_user, "is_bot", False):
+        return
+
+    candidate = parse_start_candidate(text, base_date=msg_dt.date())
+    if candidate is None:
+        return
+
+    uid = m.from_user.id
+    save_mention(m.chat.id, uid, mention_from_user(m.from_user))
+    save_user(m.chat.id, uid, getattr(m.from_user, "username", None), getattr(m.from_user, "full_name", None))
+    save_start_candidate(
+        m.chat.id,
+        uid,
+        candidate.full_name,
+        candidate.start_date.isoformat(),
+        text,
+        msg_dt.isoformat(),
+    )
+    print(
+        "START_CANDIDATE",
+        "chat_id=", m.chat.id,
+        "uid=", uid,
+        "name=", candidate.full_name,
+        "start_date=", candidate.start_date.isoformat(),
+    )
+
 @dp.message(Command("pingred"))
 async def ping_red(m: Message):
     if not m.from_user:
@@ -225,6 +266,108 @@ async def ping_red(m: Message):
     users = get_users(m.chat.id)
     tags = [mention_for_uid(uid, mentions, users) for uid in red_uids]
     await m.answer("Красные полосочки в таблице, когда в строй?\n\n" + "\n".join(tags))
+
+@dp.message(Command("scan"))
+async def scan_start_candidates(m: Message):
+    if not m.from_user:
+        return
+
+    if m.chat.id not in GROUPS:
+        await m.reply("Команду /scan запускаем в группе, которая привязана к таблице.")
+        return
+
+    if m.from_user.id not in ADMIN_IDS and not is_admin(m.chat.id, m.from_user.id):
+        await m.reply("⛔️ У тебя нет доступа к этой команде.")
+        return
+
+    candidates = get_start_candidates(m.chat.id)
+    pending = {
+        uid: candidate
+        for uid, candidate in candidates.items()
+        if isinstance(candidate, dict) and not candidate.get("imported_at")
+    }
+    if not pending:
+        await m.reply("Новых заявок на старт пока не вижу.")
+        return
+
+    now = datetime.now(tz)
+    sc = get_sc(m.chat.id)
+    rows = sc.rows()
+    existing_uids = existing_uids_from_rows(rows)
+
+    added = 0
+    linked_existing = 0
+    already_in_table = 0
+    duplicate_names = 0
+    invalid = 0
+
+    for uid_raw, candidate in sorted(pending.items(), key=lambda item: item[1].get("message_date", "")):
+        try:
+            uid = int(uid_raw)
+            start_date = date.fromisoformat(str(candidate.get("start_date", "")))
+        except Exception:
+            invalid += 1
+            continue
+
+        full_name = str(candidate.get("full_name", "")).strip()
+        if not full_name:
+            invalid += 1
+            continue
+
+        uid_key = normalize_uid_value(uid)
+        if uid_key in existing_uids:
+            already_in_table += 1
+            mark_start_candidate_imported(m.chat.id, uid, now.isoformat())
+            continue
+
+        date_value = start_date_sheet_value(start_date, today=now.date())
+        matched_row, matched_uid = find_row_by_candidate_name(rows, full_name)
+
+        if matched_row is not None:
+            if matched_uid:
+                duplicate_names += 1
+                mark_start_candidate_imported(m.chat.id, uid, now.isoformat())
+                continue
+
+            sc.write(matched_row, "J", uid)
+            if date_value:
+                sc.write(matched_row, "I", date_value)
+            linked_existing += 1
+            existing_uids.add(uid_key)
+
+            row_index = matched_row - 2
+            if 0 <= row_index < len(rows):
+                while len(rows[row_index]) <= 9:
+                    rows[row_index].append("")
+                if date_value:
+                    rows[row_index][8] = date_value
+                rows[row_index][9] = str(uid)
+
+            mark_start_candidate_imported(m.chat.id, uid, now.isoformat())
+            continue
+
+        sc.append_start_user(full_name, date_value, uid)
+        added += 1
+        existing_uids.add(uid_key)
+        new_row = [""] * 11
+        new_row[0] = full_name
+        new_row[8] = date_value
+        new_row[9] = str(uid)
+        rows.append(new_row)
+        mark_start_candidate_imported(m.chat.id, uid, now.isoformat())
+
+    parts = [f"Скан завершён. Добавлено новых строк: {added}."]
+    if linked_existing:
+        parts.append(f"Привязала к уже существующим строкам: {linked_existing}.")
+    if already_in_table:
+        parts.append(f"Уже были в таблице по user_id: {already_in_table}.")
+    if duplicate_names:
+        parts.append(f"Пропустила как уже существующие ФИО: {duplicate_names}.")
+    if invalid:
+        parts.append(f"Не смогла разобрать сохранённых заявок: {invalid}.")
+    parts.append("Колонку I заполняю только если старт позже завтрашнего дня.")
+
+    await m.reply("\n".join(parts))
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -442,18 +585,16 @@ async def report_handler(m: Message):
         )
 
     text = get_msg_text(m)
+    msg_dt = m.date.astimezone(tz) if m.date else datetime.now(tz)
+    remember_start_candidate(m, text, msg_dt)
+
     if not message_is_report(text):
         return
 
     uid = m.from_user.id
-    msg_dt = m.date.astimezone(tz) if m.date else datetime.now(tz)
     hour, minute = msg_dt.hour, msg_dt.minute
 
-    if m.from_user.username:
-        mention = "@" + m.from_user.username
-    else:
-        safe_name = (m.from_user.full_name or "участник").replace("<", "").replace(">", "")
-        mention = f'<a href="tg://user?id={uid}">{safe_name}</a>'
+    mention = mention_from_user(m.from_user)
 
     chat_id = m.chat.id
     sc = get_sc(chat_id)

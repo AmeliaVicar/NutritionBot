@@ -329,3 +329,26 @@ class Sheets:
 
         return len(self.rows()) + 1
 
+    def append_start_user(self, full_name: str, start_date: str, uid: int) -> int:
+        new_row = [""] * TOTAL_COLS
+        new_row[0] = (full_name or "").strip()  # A
+        new_row[8] = (start_date or "").strip()  # I
+        new_row[9] = str(uid)  # J
+
+        req = self.sheets.spreadsheets().values().append(
+            spreadsheetId=self.sid,
+            range=f"{self.sheet_ref}!A:K",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [new_row]},
+        )
+        res = self._exec(req)
+        self._drop_cache()
+
+        updated_range = res.get("updates", {}).get("updatedRange", "")
+        m = re.search(r"!(?:A)?(\d+):", updated_range)
+        if m:
+            return int(m.group(1))
+
+        return len(self.rows()) + 1
+

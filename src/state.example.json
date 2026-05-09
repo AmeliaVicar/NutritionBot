@@ -3,6 +3,8 @@
     "active": [],
     "excused": [],
     "mentions": {},
-    "excused_until": {}
+    "excused_until": {},
+    "users": {},
+    "start_candidates": {}
   }
 }

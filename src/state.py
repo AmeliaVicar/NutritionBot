@@ -15,6 +15,7 @@ def _new_group_state() -> dict:
         "mentions": {},
         "excused_until": {},
         "users": {},
+        "start_candidates": {},
     }
 
 
@@ -44,6 +45,7 @@ def _get_group(data: dict, chat_id: int) -> dict:
         group.setdefault("mentions", {})
         group.setdefault("excused_until", {})
         group.setdefault("users", {})
+        group.setdefault("start_candidates", {})
     return data[key]
 
 
@@ -86,6 +88,47 @@ def get_users(chat_id: int) -> Dict[str, Dict[str, str]]:
             users.setdefault(str(uid), {"username": "", "full_name": ""})
 
     return users
+
+
+def save_start_candidate(
+    chat_id: int,
+    uid: int,
+    full_name: str,
+    start_date_iso: str,
+    raw_text: str,
+    message_date_iso: str,
+):
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    candidates = group.get("start_candidates", {})
+    candidates[str(uid)] = {
+        "full_name": (full_name or "").strip(),
+        "start_date": (start_date_iso or "").strip(),
+        "raw_text": (raw_text or "").strip(),
+        "message_date": (message_date_iso or "").strip(),
+    }
+    group["start_candidates"] = candidates
+    _save_all(data)
+
+
+def get_start_candidates(chat_id: int) -> Dict[str, Dict[str, str]]:
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    candidates = group.get("start_candidates", {})
+    return candidates if isinstance(candidates, dict) else {}
+
+
+def mark_start_candidate_imported(chat_id: int, uid: int, imported_at_iso: str):
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    candidates = group.get("start_candidates", {})
+    candidate = candidates.get(str(uid))
+    if not isinstance(candidate, dict):
+        return
+    candidate["imported_at"] = imported_at_iso
+    candidates[str(uid)] = candidate
+    group["start_candidates"] = candidates
+    _save_all(data)
 
 
 def mark_excused(chat_id: int, uid: int):
