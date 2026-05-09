@@ -214,13 +214,135 @@ def mention_from_user(user) -> str:
     safe_name = html.escape((getattr(user, "full_name", None) or "участник").strip() or "участник")
     return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
 
-def remember_start_candidate(m: Message, text: str, msg_dt: datetime):
+def _tsv_value(value) -> str:
+    return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
+
+def start_candidate_history_path(chat_id: int, day: date) -> str:
+    out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, f"start_candidates_{chat_id}_{day.isoformat()}.tsv")
+
+def append_start_candidate_history(
+    chat_id: int,
+    uid: int,
+    username: str | None,
+    telegram_full_name: str | None,
+    parsed_full_name: str,
+    start_date: date,
+    raw_text: str,
+    msg_dt: datetime,
+):
+    path = start_candidate_history_path(chat_id, msg_dt.date())
+    needs_header = not os.path.exists(path) or os.path.getsize(path) == 0
+    sheet_date = start_date_sheet_value(start_date, today=msg_dt.date())
+
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        if needs_header:
+            f.write(
+                "message_date\tchat_id\tuser_id\tusername\ttelegram_full_name\t"
+                "parsed_full_name\tstart_date\tsheet_date\traw_text\n"
+            )
+        f.write(
+            "\t".join(
+                [
+                    _tsv_value(msg_dt.isoformat()),
+                    _tsv_value(chat_id),
+                    _tsv_value(uid),
+                    _tsv_value(username),
+                    _tsv_value(telegram_full_name),
+                    _tsv_value(parsed_full_name),
+                    _tsv_value(start_date.isoformat()),
+                    _tsv_value(sheet_date),
+                    _tsv_value(raw_text),
+                ]
+            )
+            + "\n"
+        )
+
+def build_start_candidate_history_from_state(chat_id: int, day: date) -> str | None:
+    candidates = get_start_candidates(chat_id)
+    rows = []
+    for uid, candidate in candidates.items():
+        if not isinstance(candidate, dict):
+            continue
+        message_date_raw = str(candidate.get("message_date", "")).strip()
+        try:
+            message_dt = datetime.fromisoformat(message_date_raw)
+        except Exception:
+            continue
+        if message_dt.date() != day:
+            continue
+        rows.append((uid, candidate, message_dt))
+
+    if not rows:
+        return None
+
+    path = start_candidate_history_path(chat_id, day)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(
+            "message_date\tchat_id\tuser_id\tusername\ttelegram_full_name\t"
+            "parsed_full_name\tstart_date\tsheet_date\traw_text\n"
+        )
+        for uid, candidate, message_dt in sorted(rows, key=lambda item: item[2]):
+            try:
+                start_date = date.fromisoformat(str(candidate.get("start_date", "")))
+            except Exception:
+                continue
+            sheet_date = start_date_sheet_value(start_date, today=message_dt.date())
+            f.write(
+                "\t".join(
+                    [
+                        _tsv_value(message_dt.isoformat()),
+                        _tsv_value(chat_id),
+                        _tsv_value(uid),
+                        "",
+                        "",
+                        _tsv_value(candidate.get("full_name", "")),
+                        _tsv_value(start_date.isoformat()),
+                        _tsv_value(sheet_date),
+                        _tsv_value(candidate.get("raw_text", "")),
+                    ]
+                )
+                + "\n"
+            )
+
+    return path
+
+def parse_history_day(raw: str | None, base: date) -> date | None:
+    if not raw:
+        return base
+
+    value = raw.strip()
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        pass
+
+    match = re.fullmatch(r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?", value)
+    if not match:
+        return None
+
+    day = int(match.group(1))
+    month = int(match.group(2))
+    year_raw = match.group(3)
+    year = base.year
+    if year_raw:
+        year = int(year_raw)
+        if year < 100:
+            year += 2000
+
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+def remember_start_candidate(m: Message, text: str, msg_dt: datetime) -> bool:
     if m.chat.id not in GROUPS or not m.from_user or getattr(m.from_user, "is_bot", False):
-        return
+        return False
 
     candidate = parse_start_candidate(text, base_date=msg_dt.date())
     if candidate is None:
-        return
+        return False
 
     uid = m.from_user.id
     save_mention(m.chat.id, uid, mention_from_user(m.from_user))
@@ -233,6 +355,16 @@ def remember_start_candidate(m: Message, text: str, msg_dt: datetime):
         text,
         msg_dt.isoformat(),
     )
+    append_start_candidate_history(
+        m.chat.id,
+        uid,
+        getattr(m.from_user, "username", None),
+        getattr(m.from_user, "full_name", None),
+        candidate.full_name,
+        candidate.start_date,
+        text,
+        msg_dt,
+    )
     print(
         "START_CANDIDATE",
         "chat_id=", m.chat.id,
@@ -240,6 +372,7 @@ def remember_start_candidate(m: Message, text: str, msg_dt: datetime):
         "name=", candidate.full_name,
         "start_date=", candidate.start_date.isoformat(),
     )
+    return True
 
 @dp.message(Command("pingred"))
 async def ping_red(m: Message):
@@ -280,6 +413,13 @@ async def scan_start_candidates(m: Message):
         await m.reply("⛔️ У тебя нет доступа к этой команде.")
         return
 
+    replied = getattr(m, "reply_to_message", None)
+    replied_parsed = False
+    if replied is not None:
+        reply_text = get_msg_text(replied)
+        reply_dt = replied.date.astimezone(tz) if replied.date else datetime.now(tz)
+        replied_parsed = remember_start_candidate(replied, reply_text, reply_dt)
+
     candidates = get_start_candidates(m.chat.id)
     pending = {
         uid: candidate
@@ -287,7 +427,10 @@ async def scan_start_candidates(m: Message):
         if isinstance(candidate, dict) and not candidate.get("imported_at")
     }
     if not pending:
-        await m.reply("Новых заявок на старт пока не вижу.")
+        if replied is not None and not replied_parsed:
+            await m.reply("Не смогла разобрать сообщение, на которое ты ответила. Нужны ФИО и дата старта.")
+        else:
+            await m.reply("Новых заявок на старт пока не вижу.")
         return
 
     now = datetime.now(tz)
@@ -368,6 +511,64 @@ async def scan_start_candidates(m: Message):
     parts.append("Колонку I заполняю только если старт позже завтрашнего дня.")
 
     await m.reply("\n".join(parts))
+
+@dp.message(Command("scan_history", "scanlog"))
+async def scan_history(m: Message):
+    if not m.from_user:
+        return
+
+    parts = (m.text or "").split()
+    today = datetime.now(tz).date()
+    target_chat_id = m.chat.id
+    date_arg = None
+
+    if m.chat.type == "private":
+        if len(parts) < 2:
+            await m.reply("В личке укажи chat_id группы: <code>/scan_history -1001234567890</code>")
+            return
+        try:
+            target_chat_id = int(parts[1].strip())
+        except ValueError:
+            await m.reply("Не смогла разобрать chat_id. Пример: <code>/scan_history -1001234567890</code>")
+            return
+        if len(parts) >= 3:
+            date_arg = parts[2]
+    elif len(parts) >= 2:
+        date_arg = parts[1]
+
+    if target_chat_id not in GROUPS:
+        await m.reply("Не нашла такую группу в config.GROUPS.")
+        return
+
+    if m.from_user.id not in ADMIN_IDS and not is_admin(target_chat_id, m.from_user.id):
+        await m.reply("⛔️ У тебя нет доступа к этой команде.")
+        return
+
+    target_day = parse_history_day(date_arg, today)
+    if target_day is None:
+        await m.reply("Не смогла разобрать дату. Можно так: <code>/scan_history -1001234567890 09.05</code>")
+        return
+
+    path = start_candidate_history_path(target_chat_id, target_day)
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        path = build_start_candidate_history_from_state(target_chat_id, target_day)
+
+    if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
+        await m.reply(f"За {target_day.isoformat()} сохранённых заявок на старт пока нет.")
+        return
+
+    try:
+        await bot.send_document(
+            m.from_user.id,
+            FSInputFile(path),
+            caption=f"Заявки на старт за {target_day.isoformat()} для chat_id {target_chat_id}",
+        )
+    except TelegramForbiddenError:
+        await m.reply("Я не могу написать тебе в личные сообщения. Сначала открой диалог с ботом и нажми /start.")
+        return
+
+    if m.chat.type == "private":
+        await m.reply("Отправила файл сюда.")
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()

@@ -16,4 +16,4 @@ GROUPS = {
 TZ = "Europe/Moscow"
 EXPORT_SCALE = int("2")
 ADMIN_IDS = {830570573}
-AUTO_BIND_UID = False
+AUTO_BIND_UID = True
