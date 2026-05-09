@@ -200,6 +200,173 @@ def mention_for_uid(uid: int, mentions: dict[str, str], users: dict[str, dict[st
     full_name = html.escape((user.get("full_name") or "участник").strip() or "участник")
     return f'<a href="tg://user?id={uid}">{full_name}</a>'
 
+def mention_from_user(user) -> str:
+    if getattr(user, "username", None):
+        return "@" + user.username
+
+    safe_name = html.escape((getattr(user, "full_name", None) or "участник").strip() or "участник")
+    return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
+
+def _tsv_value(value) -> str:
+    return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
+
+def start_candidate_history_path(chat_id: int, day: date) -> str:
+    out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, f"start_candidates_{chat_id}_{day.isoformat()}.tsv")
+
+def append_start_candidate_history(
+    chat_id: int,
+    uid: int,
+    username: str | None,
+    telegram_full_name: str | None,
+    parsed_full_name: str,
+    start_date: date,
+    raw_text: str,
+    msg_dt: datetime,
+):
+    path = start_candidate_history_path(chat_id, msg_dt.date())
+    needs_header = not os.path.exists(path) or os.path.getsize(path) == 0
+    sheet_date = start_date_sheet_value(start_date, today=msg_dt.date())
+
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        if needs_header:
+            f.write(
+                "message_date\tchat_id\tuser_id\tusername\ttelegram_full_name\t"
+                "parsed_full_name\tstart_date\tsheet_date\traw_text\n"
+            )
+        f.write(
+            "\t".join(
+                [
+                    _tsv_value(msg_dt.isoformat()),
+                    _tsv_value(chat_id),
+                    _tsv_value(uid),
+                    _tsv_value(username),
+                    _tsv_value(telegram_full_name),
+                    _tsv_value(parsed_full_name),
+                    _tsv_value(start_date.isoformat()),
+                    _tsv_value(sheet_date),
+                    _tsv_value(raw_text),
+                ]
+            )
+            + "\n"
+        )
+
+def build_start_candidate_history_from_state(chat_id: int, day: date) -> str | None:
+    candidates = get_start_candidates(chat_id)
+    rows = []
+    for uid, candidate in candidates.items():
+        if not isinstance(candidate, dict):
+            continue
+        message_date_raw = str(candidate.get("message_date", "")).strip()
+        try:
+            message_dt = datetime.fromisoformat(message_date_raw)
+        except Exception:
+            continue
+        if message_dt.date() != day:
+            continue
+        rows.append((uid, candidate, message_dt))
+
+    if not rows:
+        return None
+
+    path = start_candidate_history_path(chat_id, day)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(
+            "message_date\tchat_id\tuser_id\tusername\ttelegram_full_name\t"
+            "parsed_full_name\tstart_date\tsheet_date\traw_text\n"
+        )
+        for uid, candidate, message_dt in sorted(rows, key=lambda item: item[2]):
+            try:
+                start_date = date.fromisoformat(str(candidate.get("start_date", "")))
+            except Exception:
+                continue
+            sheet_date = start_date_sheet_value(start_date, today=message_dt.date())
+            f.write(
+                "\t".join(
+                    [
+                        _tsv_value(message_dt.isoformat()),
+                        _tsv_value(chat_id),
+                        _tsv_value(uid),
+                        "",
+                        "",
+                        _tsv_value(candidate.get("full_name", "")),
+                        _tsv_value(start_date.isoformat()),
+                        _tsv_value(sheet_date),
+                        _tsv_value(candidate.get("raw_text", "")),
+                    ]
+                )
+                + "\n"
+            )
+
+    return path
+
+def parse_history_day(raw: str | None, base: date) -> date | None:
+    if not raw:
+        return base
+
+    value = raw.strip()
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        pass
+
+    match = re.fullmatch(r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?", value)
+    if not match:
+        return None
+
+    day = int(match.group(1))
+    month = int(match.group(2))
+    year_raw = match.group(3)
+    year = base.year
+    if year_raw:
+        year = int(year_raw)
+        if year < 100:
+            year += 2000
+
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+def remember_start_candidate(m: Message, text: str, msg_dt: datetime) -> bool:
+    if m.chat.id not in GROUPS or not m.from_user or getattr(m.from_user, "is_bot", False):
+        return False
+
+    candidate = parse_start_candidate(text, base_date=msg_dt.date())
+    if candidate is None:
+        return False
+
+    uid = m.from_user.id
+    save_mention(m.chat.id, uid, mention_from_user(m.from_user))
+    save_user(m.chat.id, uid, getattr(m.from_user, "username", None), getattr(m.from_user, "full_name", None))
+    save_start_candidate(
+        m.chat.id,
+        uid,
+        candidate.full_name,
+        candidate.start_date.isoformat(),
+        text,
+        msg_dt.isoformat(),
+    )
+    append_start_candidate_history(
+        m.chat.id,
+        uid,
+        getattr(m.from_user, "username", None),
+        getattr(m.from_user, "full_name", None),
+        candidate.full_name,
+        candidate.start_date,
+        text,
+        msg_dt,
+    )
+    print(
+        "START_CANDIDATE",
+        "chat_id=", m.chat.id,
+        "uid=", uid,
+        "name=", candidate.full_name,
+        "start_date=", candidate.start_date.isoformat(),
+    )
+    return True
+
 @dp.message(Command("pingred"))
 async def ping_red(m: Message):
     if not m.from_user:
@@ -306,9 +473,9 @@ MENU_INLINE = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🥞 сырники", callback_data="menu:syrniki"),
         InlineKeyboardButton(text="🫓 лаваш", callback_data="menu:lavash"),
         InlineKeyboardButton(text="🍪 печенье", callback_data="menu:cookie"),
-        # InlineKeyboardButton(text="🍇 виноград", callback_data="menu:grape"),
-        # InlineKeyboardButton(text="🍌 банан", callback_data="menu:banana"),
-        # InlineKeyboardButton(text="🥬 свекла", callback_data="menu:beet"),
+        InlineKeyboardButton(text="🍇 виноград", callback_data="menu:grape"),
+        InlineKeyboardButton(text="🍌 банан", callback_data="menu:banana"),
+        InlineKeyboardButton(text="🥬 свекла", callback_data="menu:beet"),
     ],
 ])
 
