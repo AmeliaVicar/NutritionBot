@@ -23,10 +23,10 @@ class SheetsExportRangeTests(unittest.TestCase):
             ["Petrova", "", "", "", "", "+", "", "", "", "456"],
         ]
 
-        self.assertEqual(export_range_for_rows(rows), "A1:K4")
+        self.assertEqual(export_range_for_rows(rows), "A1:I4")
 
     def test_export_range_falls_back_to_header_when_empty(self):
-        self.assertEqual(export_range_for_rows([]), "A1:K1")
+        self.assertEqual(export_range_for_rows([]), "A1:I1")
 
 
 if __name__ == "__main__":

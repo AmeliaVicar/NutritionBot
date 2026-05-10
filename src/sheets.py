@@ -17,9 +17,10 @@ SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, "service_account.json")
 # Таблица A..K
 RANGE_ROWS = "A2:K"
 TOTAL_COLS = 11  # A..K
+EXPORT_TOTAL_COLS = 9  # A..I, without internal UID/service columns
 EXPORT_FIRST_COL = "A"
 EXPORT_FIRST_ROW = 1
-DEFAULT_EXPORT_SCALE = 3
+DEFAULT_EXPORT_SCALE = 4
 
 # UID в J
 UID_COL_LETTER = "J"
@@ -101,7 +102,7 @@ def _last_data_row(rows: list[list]) -> int:
     return last_row
 
 def export_range_for_rows(rows: list[list]) -> str:
-    last_col = _column_letter(TOTAL_COLS)
+    last_col = _column_letter(EXPORT_TOTAL_COLS)
     return f"{EXPORT_FIRST_COL}{EXPORT_FIRST_ROW}:{last_col}{_last_data_row(rows)}"
 
 class Sheets:
@@ -249,6 +250,11 @@ class Sheets:
             "portrait": "true",
             "fitw": "true",
             "scale": str(self.export_scale),
+            "size": "7",
+            "top_margin": "0.20",
+            "bottom_margin": "0.20",
+            "left_margin": "0.20",
+            "right_margin": "0.20",
             "sheetnames": "false",
             "printtitle": "false",
             "pagenumbers": "false",
