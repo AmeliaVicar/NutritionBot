@@ -650,9 +650,9 @@ MENU_INLINE = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🥞 сырники", callback_data="menu:syrniki"),
         InlineKeyboardButton(text="🫓 лаваш", callback_data="menu:lavash"),
         InlineKeyboardButton(text="🍪 печенье", callback_data="menu:cookie"),
-        InlineKeyboardButton(text="🍇 виноград", callback_data="menu:grape"),
-        InlineKeyboardButton(text="🍌 банан", callback_data="menu:banana"),
-        InlineKeyboardButton(text="🥬 свекла", callback_data="menu:beet"),
+        # InlineKeyboardButton(text="🍇 виноград", callback_data="menu:grape"),
+        # InlineKeyboardButton(text="🍌 банан", callback_data="menu:banana"),
+        # InlineKeyboardButton(text="🥬 свекла", callback_data="menu:beet"),
     ],
 ])
 
