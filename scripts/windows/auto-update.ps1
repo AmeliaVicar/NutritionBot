@@ -132,14 +132,24 @@ function Start-ManagedBot {
     $stdout = Join-Path $LogDir "bot.out.log"
     $stderr = Join-Path $LogDir "bot.err.log"
 
-    $process = Start-Process `
-        -FilePath $PythonExe `
-        -ArgumentList @("-u", $botScript) `
-        -WorkingDirectory $RepoDir `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr `
-        -PassThru
+    $oldPythonIoEncoding = [Environment]::GetEnvironmentVariable("PYTHONIOENCODING", "Process")
+    $oldPythonUtf8 = [Environment]::GetEnvironmentVariable("PYTHONUTF8", "Process")
+    [Environment]::SetEnvironmentVariable("PYTHONIOENCODING", "utf-8", "Process")
+    [Environment]::SetEnvironmentVariable("PYTHONUTF8", "1", "Process")
+
+    try {
+        $process = Start-Process `
+            -FilePath $PythonExe `
+            -ArgumentList @("-u", $botScript) `
+            -WorkingDirectory $RepoDir `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr `
+            -PassThru
+    } finally {
+        [Environment]::SetEnvironmentVariable("PYTHONIOENCODING", $oldPythonIoEncoding, "Process")
+        [Environment]::SetEnvironmentVariable("PYTHONUTF8", $oldPythonUtf8, "Process")
+    }
 
     Set-Content -LiteralPath $PidFile -Value $process.Id -Encoding ASCII
     Write-DeployLog "Started bot with pid $($process.Id)."
