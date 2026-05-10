@@ -9,7 +9,7 @@ import pytz
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import (
     Message,
     ReplyKeyboardMarkup, KeyboardButton,
@@ -39,7 +39,7 @@ from parser import (
     parse_weight_delta,
 )
 from report_status import report_row_status, red_report_uids
-from sheets import Sheets, GREEN, RED, normalize_uid_value
+from sheets import Sheets, GREEN, RED, DEFAULT_EXPORT_SCALE, normalize_uid_value
 from exporter import pdf_to_jpeg
 from schedule_utils import staggered_daily_time
 from state import (
@@ -64,7 +64,11 @@ def get_sc(chat_id : int) -> Sheets:
         raise KeyError(f"Unknown chay_id={chat_id}. Add it to config.CROUPS")
     if chat_id not in _sheets_cache:
         cfg = GROUPS[chat_id]
-        _sheets_cache[chat_id] = Sheets(cfg["SPREADSHEET_ID"], cfg["SHEET_NAME"])
+        _sheets_cache[chat_id] = Sheets(
+            cfg["SPREADSHEET_ID"],
+            cfg["SHEET_NAME"],
+            export_scale=cfg.get("EXPORT_SCALE", DEFAULT_EXPORT_SCALE),
+        )
     return _sheets_cache[chat_id]
 
 def is_admin(chat_id: int, uid: int) -> bool:
@@ -213,6 +217,112 @@ def mention_from_user(user) -> str:
 
     safe_name = html.escape((getattr(user, "full_name", None) or "участник").strip() or "участник")
     return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
+
+def remember_chat_user(chat_id: int, user) -> bool:
+    if chat_id not in GROUPS or not user or getattr(user, "is_bot", False):
+        return False
+
+    uid = int(user.id)
+    save_mention(chat_id, uid, mention_from_user(user))
+    save_user(chat_id, uid, getattr(user, "username", None), getattr(user, "full_name", None))
+    return True
+
+def saved_user_name(info: dict) -> str:
+    full_name = str(info.get("full_name", "")).strip()
+    if full_name:
+        return full_name
+
+    username = str(info.get("username", "")).strip().lstrip("@")
+    if username:
+        return f"@{username}"
+
+    return ""
+
+def update_local_user_row(rows: list[list], row: int, uid: int, start_date: str = ""):
+    row_index = row - 2
+    if not 0 <= row_index < len(rows):
+        return
+
+    while len(rows[row_index]) <= 9:
+        rows[row_index].append("")
+    if start_date:
+        while len(rows[row_index]) <= 8:
+            rows[row_index].append("")
+        rows[row_index][8] = start_date
+    rows[row_index][9] = str(uid)
+
+def append_local_user_row(rows: list[list], full_name: str, uid: int, start_date: str = ""):
+    new_row = [""] * 11
+    new_row[0] = full_name
+    new_row[8] = start_date
+    new_row[9] = str(uid)
+    rows.append(new_row)
+
+async def user_is_in_chat(chat_id: int, uid: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id, uid)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        return False
+
+    status = getattr(member, "status", "")
+    status_value = getattr(status, "value", str(status)).lower()
+    if status_value in {"left", "kicked"}:
+        return False
+    if status_value == "restricted":
+        return bool(getattr(member, "is_member", True))
+    return True
+
+def saved_user_sort_key(item) -> int:
+    try:
+        return int(normalize_uid_value(item[0]) or 0)
+    except ValueError:
+        return 0
+
+async def sync_known_chat_users(chat_id: int, sc: Sheets, rows: list[list], existing_uids: set[str]) -> tuple[int, int, int, int]:
+    added = 0
+    linked_existing = 0
+    skipped_no_name = 0
+    skipped_not_in_chat = 0
+
+    for uid_raw, info in sorted(get_users(chat_id).items(), key=saved_user_sort_key):
+        uid_key = normalize_uid_value(uid_raw)
+        if not uid_key or uid_key in existing_uids:
+            continue
+
+        try:
+            uid = int(uid_key)
+        except ValueError:
+            continue
+
+        if uid in ADMIN_IDS or is_admin(chat_id, uid):
+            continue
+
+        if not await user_is_in_chat(chat_id, uid):
+            skipped_not_in_chat += 1
+            continue
+
+        full_name = saved_user_name(info)
+        if not full_name:
+            skipped_no_name += 1
+            continue
+
+        matched_row, matched_uid = find_row_by_candidate_name(rows, full_name)
+        if matched_row is not None and not matched_uid:
+            sc.write(matched_row, "J", uid)
+            update_local_user_row(rows, matched_row, uid)
+            linked_existing += 1
+            existing_uids.add(uid_key)
+            continue
+
+        if matched_row is not None and matched_uid:
+            continue
+
+        sc.append_start_user(full_name, "", uid)
+        append_local_user_row(rows, full_name, uid)
+        added += 1
+        existing_uids.add(uid_key)
+
+    return added, linked_existing, skipped_no_name, skipped_not_in_chat
 
 def _tsv_value(value) -> str:
     return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
@@ -400,7 +510,7 @@ async def ping_red(m: Message):
     tags = [mention_for_uid(uid, mentions, users) for uid in red_uids]
     await m.answer("Красные полосочки в таблице, когда в строй?\n\n" + "\n".join(tags))
 
-@dp.message(Command("scan"))
+@dp.message(Command("scan", "screen", "скрин"))
 async def scan_start_candidates(m: Message):
     if not m.from_user:
         return
@@ -413,9 +523,13 @@ async def scan_start_candidates(m: Message):
         await m.reply("⛔️ У тебя нет доступа к этой команде.")
         return
 
+    remember_chat_user(m.chat.id, m.from_user)
+
     replied = getattr(m, "reply_to_message", None)
     replied_parsed = False
     if replied is not None:
+        if getattr(replied, "from_user", None):
+            remember_chat_user(m.chat.id, replied.from_user)
         reply_text = get_msg_text(replied)
         reply_dt = replied.date.astimezone(tz) if replied.date else datetime.now(tz)
         replied_parsed = remember_start_candidate(replied, reply_text, reply_dt)
@@ -426,12 +540,9 @@ async def scan_start_candidates(m: Message):
         for uid, candidate in candidates.items()
         if isinstance(candidate, dict) and not candidate.get("imported_at")
     }
-    if not pending:
-        if replied is not None and not replied_parsed:
-            await m.reply("Не смогла разобрать сообщение, на которое ты ответила. Нужны ФИО и дата старта.")
-        else:
-            await m.reply("Новых заявок на старт пока не вижу.")
-        return
+    reply_notes = []
+    if not pending and replied is not None and not replied_parsed:
+        reply_notes.append("Не смогла разобрать сообщение, на которое ты ответила. Нужны ФИО и дата старта.")
 
     now = datetime.now(tz)
     sc = get_sc(m.chat.id)
@@ -477,14 +588,7 @@ async def scan_start_candidates(m: Message):
                 sc.write(matched_row, "I", date_value)
             linked_existing += 1
             existing_uids.add(uid_key)
-
-            row_index = matched_row - 2
-            if 0 <= row_index < len(rows):
-                while len(rows[row_index]) <= 9:
-                    rows[row_index].append("")
-                if date_value:
-                    rows[row_index][8] = date_value
-                rows[row_index][9] = str(uid)
+            update_local_user_row(rows, matched_row, uid, date_value)
 
             mark_start_candidate_imported(m.chat.id, uid, now.isoformat())
             continue
@@ -492,22 +596,37 @@ async def scan_start_candidates(m: Message):
         sc.append_start_user(full_name, date_value, uid)
         added += 1
         existing_uids.add(uid_key)
-        new_row = [""] * 11
-        new_row[0] = full_name
-        new_row[8] = date_value
-        new_row[9] = str(uid)
-        rows.append(new_row)
+        append_local_user_row(rows, full_name, uid, date_value)
         mark_start_candidate_imported(m.chat.id, uid, now.isoformat())
 
-    parts = [f"Скан завершён. Добавлено новых строк: {added}."]
-    if linked_existing:
-        parts.append(f"Привязала к уже существующим строкам: {linked_existing}.")
+    known_added, known_linked, skipped_no_name, skipped_not_in_chat = await sync_known_chat_users(
+        m.chat.id,
+        sc,
+        rows,
+        existing_uids,
+    )
+
+    parts = ["Скан завершён."]
+    parts.extend(reply_notes)
+    if added or pending:
+        parts.append(f"Добавлено новых строк по заявкам: {added}.")
+    if known_added:
+        parts.append(f"Добавлено новых строк по user_id: {known_added}.")
+    total_linked = linked_existing + known_linked
+    if total_linked:
+        parts.append(f"Привязала user_id к уже существующим строкам: {total_linked}.")
     if already_in_table:
         parts.append(f"Уже были в таблице по user_id: {already_in_table}.")
     if duplicate_names:
         parts.append(f"Пропустила как уже существующие ФИО: {duplicate_names}.")
     if invalid:
         parts.append(f"Не смогла разобрать сохранённых заявок: {invalid}.")
+    if skipped_no_name:
+        parts.append(f"Пропустила сохранённых user_id без имени/username: {skipped_no_name}.")
+    if skipped_not_in_chat:
+        parts.append(f"Пропустила user_id, которых Telegram сейчас не видит в группе: {skipped_not_in_chat}.")
+    if not any([added, known_added, total_linked, already_in_table, duplicate_names, invalid, skipped_no_name, skipped_not_in_chat]) and not reply_notes:
+        parts.append("Новых заявок и новых user_id для таблицы не нашла.")
     parts.append("Колонку I заполняю только если старт позже завтрашнего дня.")
 
     await m.reply("\n".join(parts))
@@ -770,6 +889,14 @@ async def menu_pick(cb: CallbackQuery):
 # -------------------------
 # Главный хендлер отчётов (текст + подписи к фото)
 # -------------------------
+@dp.message(F.new_chat_members)
+async def new_chat_members(m: Message):
+    if m.chat.id not in GROUPS:
+        return
+
+    for user in m.new_chat_members or []:
+        remember_chat_user(m.chat.id, user)
+
 @dp.message((F.text | F.caption))
 async def report_handler(m: Message):
     if not m.from_user:
@@ -799,6 +926,10 @@ async def report_handler(m: Message):
         )
         return
 
+    if getattr(m.from_user, "is_bot", False):
+        return
+
+    remember_chat_user(m.chat.id, m.from_user)
     remember_start_candidate(m, text, msg_dt)
 
     if not message_is_report(text):

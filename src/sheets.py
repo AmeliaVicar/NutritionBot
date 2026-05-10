@@ -4,6 +4,7 @@ import ssl
 import time
 import uuid
 import random
+from urllib.parse import urlencode
 from typing import Optional, List, Tuple
 
 GREEN = {"red": 0.8, "green": 0.95, "blue": 0.8}
@@ -16,6 +17,9 @@ SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, "service_account.json")
 # Таблица A..K
 RANGE_ROWS = "A2:K"
 TOTAL_COLS = 11  # A..K
+EXPORT_FIRST_COL = "A"
+EXPORT_FIRST_ROW = 1
+DEFAULT_EXPORT_SCALE = 3
 
 # UID в J
 UID_COL_LETTER = "J"
@@ -79,8 +83,29 @@ def _sheet_ref(title: str) -> str:
         return f"'{title}'"
     return title
 
+def _column_letter(index: int) -> str:
+    if index < 1:
+        raise ValueError("column index must be >= 1")
+
+    letters = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
+
+def _last_data_row(rows: list[list]) -> int:
+    last_row = EXPORT_FIRST_ROW
+    for row_num, row in enumerate(rows, start=2):
+        if any(str(cell).strip() for cell in row[:TOTAL_COLS]):
+            last_row = row_num
+    return last_row
+
+def export_range_for_rows(rows: list[list]) -> str:
+    last_col = _column_letter(TOTAL_COLS)
+    return f"{EXPORT_FIRST_COL}{EXPORT_FIRST_ROW}:{last_col}{_last_data_row(rows)}"
+
 class Sheets:
-    def __init__(self, spreadsheet_id: str, sheet_name: str):
+    def __init__(self, spreadsheet_id: str, sheet_name: str, export_scale: int = DEFAULT_EXPORT_SCALE):
         _load_google_api()
 
         if not os.path.exists(SERVICE_ACCOUNT_PATH):
@@ -99,6 +124,7 @@ class Sheets:
         self.sid = spreadsheet_id
         self.sheet = sheet_name
         self.sheet_ref = _sheet_ref(sheet_name)
+        self.export_scale = int(export_scale or DEFAULT_EXPORT_SCALE)
 
         self._rows_cache = None
         self._rows_cache_ts = 0.0
@@ -218,20 +244,20 @@ class Sheets:
         import requests
 
         token = self.sheets._http.credentials.token
-
-        url = (
-            f"https://docs.google.com/spreadsheets/d/{self.sid}/export"
-            f"?format=pdf"
-            f"&portrait=true"
-            f"&fitw=true"
-            f"&scale=3"
-            f"&sheetnames=false"
-            f"&printtitle=false"
-            f"&pagenumbers=false"
-            f"&gridlines=false"
-            f"&fzr=false"
-            f"&gid={self.sheet_id}"
-        )
+        params = {
+            "format": "pdf",
+            "portrait": "true",
+            "fitw": "true",
+            "scale": str(self.export_scale),
+            "sheetnames": "false",
+            "printtitle": "false",
+            "pagenumbers": "false",
+            "gridlines": "false",
+            "fzr": "false",
+            "gid": str(self.sheet_id),
+            "range": export_range_for_rows(self.rows()),
+        }
+        url = f"https://docs.google.com/spreadsheets/d/{self.sid}/export?{urlencode(params)}"
 
         headers = {
             "Authorization": f"Bearer {token}"
