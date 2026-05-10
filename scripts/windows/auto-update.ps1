@@ -163,6 +163,30 @@ function Restart-ManagedBot {
     Start-ManagedBot
 }
 
+function Invoke-PipInstall {
+    param([string]$RequirementsPath)
+
+    $certEnvNames = @("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "PIP_CERT", "CURL_CA_BUNDLE")
+    $savedCertEnv = @{}
+
+    foreach ($name in $certEnvNames) {
+        $savedCertEnv[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+        Remove-Item -LiteralPath "Env:\$name" -ErrorAction SilentlyContinue
+    }
+
+    try {
+        Invoke-Logged -FilePath $PythonExe -Arguments @("-m", "pip", "install", "-r", $RequirementsPath) | Out-Null
+    } finally {
+        foreach ($name in $certEnvNames) {
+            if ($null -eq $savedCertEnv[$name]) {
+                Remove-Item -LiteralPath "Env:\$name" -ErrorAction SilentlyContinue
+            } else {
+                [Environment]::SetEnvironmentVariable($name, $savedCertEnv[$name], "Process")
+            }
+        }
+    }
+}
+
 $lockStream = $null
 try {
     try {
@@ -224,7 +248,7 @@ try {
     if (-not $SkipInstallRequirements -and $currentHead -ne $lastInstalled) {
         $requirements = Join-Path $RepoDir "requirements.txt"
         if (Test-Path -LiteralPath $requirements) {
-            Invoke-Logged -FilePath $PythonExe -Arguments @("-m", "pip", "install", "-r", $requirements) | Out-Null
+            Invoke-PipInstall -RequirementsPath $requirements
         }
         Set-Content -LiteralPath $InstallMarkerFile -Value $currentHead -Encoding ASCII
     }
