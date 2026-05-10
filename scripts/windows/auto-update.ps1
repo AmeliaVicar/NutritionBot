@@ -57,8 +57,14 @@ function Invoke-Logged {
     )
 
     Write-DeployLog ("RUN: " + $FilePath + " " + ($Arguments -join " "))
-    $output = & $FilePath @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $FilePath @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     foreach ($line in $output) {
         Write-DeployLog ("  " + $line)
