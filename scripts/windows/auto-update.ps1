@@ -186,7 +186,7 @@ try {
         return
     }
 
-    $statusOutput = Invoke-Git @("status", "--porcelain")
+    $statusOutput = Invoke-Git @("status", "--porcelain", "--untracked-files=no")
     if ($statusOutput) {
         Write-DeployLog "Working tree has local changes; skipping git update."
         if ($RestartBot) {
