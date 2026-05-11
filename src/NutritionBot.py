@@ -26,6 +26,10 @@ from enrollment import (
     parse_start_candidate,
     start_date_sheet_value,
 )
+from manual_green import (
+    format_manual_green_until,
+    parse_manual_green_command,
+)
 from parser import (
     detect_meal,
     is_skip,
@@ -45,7 +49,9 @@ from schedule_utils import staggered_daily_time
 from state import (
     mark_active, mark_excused, get_sets, save_mention, save_user, get_users,
     set_excused_until, is_excused_today, parse_until_date, cleanup_expired_excused_until, remove_excused,
-    save_start_candidate, get_start_candidates, mark_start_candidate_imported
+    save_start_candidate, get_start_candidates, mark_start_candidate_imported,
+    cleanup_expired_manual_green, get_manual_green, remove_manual_green,
+    set_manual_green,
 )
 
 # -------------------------
@@ -237,6 +243,126 @@ def saved_user_name(info: dict) -> str:
         return f"@{username}"
 
     return ""
+
+def telegram_user_display_name(user) -> str:
+    full_name = (getattr(user, "full_name", None) or "").strip()
+    if full_name:
+        return full_name
+
+    username = (getattr(user, "username", None) or "").strip().lstrip("@")
+    if username:
+        return f"@{username}"
+
+    return "участник"
+
+def manual_green_entry_is_active(entry: dict[str, str] | None, today: date) -> bool:
+    if entry is None:
+        return False
+
+    until = str(entry.get("until", "") or "").strip()
+    if not until:
+        return True
+
+    try:
+        return today <= date.fromisoformat(until)
+    except Exception:
+        return False
+
+def manual_green_entry_sheet_value(entry: dict[str, str] | None) -> str:
+    if entry is None:
+        return ""
+
+    until = str(entry.get("until", "") or "").strip()
+    if not until:
+        return ""
+
+    try:
+        return format_manual_green_until(date.fromisoformat(until))
+    except Exception:
+        return ""
+
+def resolve_manual_green_target(m: Message):
+    replied = getattr(m, "reply_to_message", None)
+    replied_user = getattr(replied, "from_user", None) if replied is not None else None
+
+    if replied_user is None or getattr(replied_user, "is_bot", False):
+        return m.from_user, None
+
+    if replied_user.id == m.from_user.id:
+        return replied_user, None
+
+    if m.from_user.id in ADMIN_IDS or is_admin(m.chat.id, m.from_user.id):
+        return replied_user, None
+
+    return None, "Ответом на чужое сообщение зелёную строку может ставить или убирать только админ."
+
+def ensure_manual_green_row(chat_id: int, sc: Sheets, user) -> int | None:
+    uid = int(user.id)
+    row = sc.find_row_by_uid(uid)
+    if row is not None:
+        return row
+
+    if not AUTO_BIND_UID:
+        return None
+
+    rows = sc.rows()
+    display_name = telegram_user_display_name(user)
+    found_row = find_row_by_fio_in_rows(rows, display_name)
+    if found_row is not None:
+        sc.write(found_row, "J", uid)
+        return found_row
+
+    return sc.append_start_user(display_name, "", uid)
+
+async def handle_manual_green_command(m: Message, text: str, msg_dt: datetime) -> bool:
+    command = parse_manual_green_command(text, msg_dt.date())
+    if command is None:
+        return False
+
+    if m.chat.id not in GROUPS or not m.from_user:
+        return False
+
+    target_user, error = resolve_manual_green_target(m)
+    if error:
+        await m.reply(error)
+        return True
+    if target_user is None:
+        await m.reply("Не поняла, кому ставить зелёную строку.")
+        return True
+
+    remember_chat_user(m.chat.id, m.from_user)
+    remember_chat_user(m.chat.id, target_user)
+
+    chat_id = m.chat.id
+    target_uid = int(target_user.id)
+    target_name = html.escape(telegram_user_display_name(target_user))
+    sc = get_sc(chat_id)
+    row = ensure_manual_green_row(chat_id, sc, target_user)
+    if row is None:
+        await m.reply("Не нашла строку этого участника в таблице.")
+        return True
+
+    if command.action == "remove":
+        remove_manual_green(chat_id, target_uid)
+        remove_excused(chat_id, target_uid)
+        sc.write(row, "I", "")
+        sc.clear_row_background(row)
+        await m.reply(f"Ок, убрала зелёную строку для <b>{target_name}</b> и очистила колонку I.")
+        return True
+
+    until_iso = command.until.isoformat() if command.until else ""
+    set_manual_green(chat_id, target_uid, until_iso)
+    sc.write(row, "I", command.sheet_value)
+    sc.paint_row(row, GREEN)
+
+    if command.until:
+        await m.reply(
+            f"Ок, поставила зелёную строку для <b>{target_name}</b> до <b>{command.sheet_value}</b>."
+        )
+    else:
+        await m.reply(f"Ок, поставила зелёную строку для <b>{target_name}</b> без даты.")
+
+    return True
 
 def update_local_user_row(rows: list[list], row: int, uid: int, start_date: str = ""):
     row_index = row - 2
@@ -494,11 +620,15 @@ async def ping_red(m: Message):
         return
 
     cleanup_expired_excused_until(m.chat.id)
+    today = datetime.now(tz).date()
+    cleanup_expired_manual_green(m.chat.id, today=today)
+    manual_green = get_manual_green(m.chat.id)
 
     sc = get_sc(m.chat.id)
     red_uids = red_report_uids(
         sc.rows(),
         lambda uid: is_excused_today(m.chat.id, uid),
+        lambda uid: manual_green_entry_is_active(manual_green.get(str(uid)), today),
     )
 
     if not red_uids:
@@ -930,6 +1060,9 @@ async def report_handler(m: Message):
         return
 
     remember_chat_user(m.chat.id, m.from_user)
+    if await handle_manual_green_command(m, text, msg_dt):
+        return
+
     remember_start_candidate(m, text, msg_dt)
 
     if not message_is_report(text):
@@ -1144,18 +1277,38 @@ async def report_handler(m: Message):
 # Отчёт: красим и отправляем
 # -------------------------
 async def report(chat_id: int):
+    today = datetime.now(tz).date()
     cleanup_expired_excused_until(chat_id)
+    expired_manual_green_uids = cleanup_expired_manual_green(chat_id, today=today)
 
     sc = get_sc(chat_id)
+    for uid in expired_manual_green_uids:
+        row = sc.find_row_by_uid(uid)
+        if row is not None:
+            sc.write(row, "I", "")
+            sc.clear_row_background(row)
+
     rows = sc.rows()
+    manual_green = get_manual_green(chat_id)
 
     for row_num, r in enumerate(rows, start=2):
-        status = report_row_status(r, lambda uid: is_excused_today(chat_id, uid))
+        status = report_row_status(
+            r,
+            lambda uid: is_excused_today(chat_id, uid),
+            lambda uid: manual_green_entry_is_active(manual_green.get(str(uid)), today),
+        )
         if status is None:
             continue
 
         if status.has_any_food:
             remove_excused(chat_id, status.uid)
+        if status.force_green:
+            value = manual_green_entry_sheet_value(manual_green.get(str(status.uid)))
+            current_value = str(r[8]).strip() if len(r) > 8 else ""
+            if current_value != value:
+                sc.write(row_num, "I", value)
+            sc.paint_row(row_num, GREEN)
+            continue
         if status.is_excused:
             sc.paint_row(row_num, GREEN)
             continue
@@ -1187,11 +1340,14 @@ async def scheduled_report(chat_id: int):
 
 
 async def lunch_ping(chat_id: int):
+    today = datetime.now(tz).date()
     cleanup_expired_excused_until(chat_id)
+    cleanup_expired_manual_green(chat_id, today=today)
 
     sc = get_sc(chat_id)
     rows = sc.rows()
     _excused, _active, mentions, _excused_until = get_sets(chat_id)
+    manual_green = get_manual_green(chat_id)
 
     missing = []
     for i, r in enumerate(rows, start=2):
@@ -1203,6 +1359,8 @@ async def lunch_ping(chat_id: int):
             continue
         uid = int(uid_raw)
         if is_excused_today(chat_id, uid):
+            continue
+        if manual_green_entry_is_active(manual_green.get(str(uid)), today):
             continue
 
         # lunch = колонка F = индекс 5

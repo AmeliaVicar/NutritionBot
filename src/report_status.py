@@ -24,6 +24,7 @@ class ReportRowStatus:
     is_excused: bool
     red_row: bool
     red_cells: tuple[str, ...]
+    force_green: bool = False
 
 
 def row_uid(row: Sequence[object]) -> Optional[int]:
@@ -48,6 +49,7 @@ def _cell_val(row: Sequence[object], letter: str) -> str:
 def report_row_status(
     row: Sequence[object],
     is_excused_today: Callable[[int], bool],
+    is_force_green: Callable[[int], bool] | None = None,
 ) -> Optional[ReportRowStatus]:
     uid = row_uid(row)
     if uid is None:
@@ -55,6 +57,17 @@ def report_row_status(
 
     values = {col: _cell_val(row, col) for col in ALL_MEALS}
     has_any_food = any(value in MEAL_MARKS for value in values.values())
+    force_green = bool(is_force_green and is_force_green(uid))
+    if force_green:
+        return ReportRowStatus(
+            uid=uid,
+            has_any_food=has_any_food,
+            is_excused=True,
+            red_row=False,
+            red_cells=(),
+            force_green=True,
+        )
+
     is_excused = not has_any_food and is_excused_today(uid)
     red_row = not has_any_food and not is_excused
     red_cells = (
@@ -75,12 +88,13 @@ def report_row_status(
 def red_report_uids(
     rows: Sequence[Sequence[object]],
     is_excused_today: Callable[[int], bool],
+    is_force_green: Callable[[int], bool] | None = None,
 ) -> list[int]:
     red_uids: list[int] = []
     seen: set[int] = set()
 
     for row in rows:
-        status = report_row_status(row, is_excused_today)
+        status = report_row_status(row, is_excused_today, is_force_green)
         if status is None or status.uid in seen:
             continue
         if status.red_row or status.red_cells:

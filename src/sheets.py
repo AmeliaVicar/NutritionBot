@@ -221,6 +221,25 @@ class Sheets:
         )
         self._exec(req)
 
+    def clear_row_background(self, row: int):
+        req = self.sheets.spreadsheets().batchUpdate(
+            spreadsheetId=self.sid,
+            body={"requests": [{
+                "repeatCell": {
+                    "range": {
+                        "sheetId": self.sheet_id,
+                        "startRowIndex": row - 1,
+                        "endRowIndex": row,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": TOTAL_COLS,
+                    },
+                    "cell": {"userEnteredFormat": {}},
+                    "fields": "userEnteredFormat.backgroundColor",
+                }
+            }]}
+        )
+        self._exec(req)
+
     def paint_cell(self, row: int, col_letter: str, color: dict):
         c = self._col_index(col_letter)
         req = self.sheets.spreadsheets().batchUpdate(

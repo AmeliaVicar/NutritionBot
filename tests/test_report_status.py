@@ -44,6 +44,15 @@ class ReportStatusTests(unittest.TestCase):
         self.assertFalse(status.red_row)
         self.assertEqual(status.red_cells, ())
 
+    def test_force_green_suppresses_red_cells_even_with_partial_food(self):
+        row = make_row(400, breakfast="+", lunch="", dinner="")
+        status = report_row_status(row, lambda uid: False, lambda uid: True)
+
+        self.assertTrue(status.force_green)
+        self.assertTrue(status.is_excused)
+        self.assertFalse(status.red_row)
+        self.assertEqual(status.red_cells, ())
+
     def test_red_report_uids_are_deduplicated(self):
         rows = [
             make_row(100),
@@ -53,6 +62,7 @@ class ReportStatusTests(unittest.TestCase):
         ]
 
         self.assertEqual(red_report_uids(rows, lambda uid: False), [100, 200])
+        self.assertEqual(red_report_uids(rows, lambda uid: False, lambda uid: uid == 200), [100])
 
 
 if __name__ == "__main__":

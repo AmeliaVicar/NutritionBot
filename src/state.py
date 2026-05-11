@@ -16,6 +16,7 @@ def _new_group_state() -> dict:
         "excused_until": {},
         "users": {},
         "start_candidates": {},
+        "manual_green": {},
     }
 
 
@@ -46,6 +47,7 @@ def _get_group(data: dict, chat_id: int) -> dict:
         group.setdefault("excused_until", {})
         group.setdefault("users", {})
         group.setdefault("start_candidates", {})
+        group.setdefault("manual_green", {})
     return data[key]
 
 
@@ -129,6 +131,112 @@ def mark_start_candidate_imported(chat_id: int, uid: int, imported_at_iso: str):
     candidates[str(uid)] = candidate
     group["start_candidates"] = candidates
     _save_all(data)
+
+
+def get_manual_green(chat_id: int) -> Dict[str, Dict[str, str]]:
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    entries = group.get("manual_green", {})
+    if not isinstance(entries, dict):
+        return {}
+
+    result: Dict[str, Dict[str, str]] = {}
+    for uid, entry in entries.items():
+        if isinstance(entry, dict):
+            until = str(entry.get("until", "") or "").strip()
+        else:
+            until = str(entry or "").strip()
+        result[str(uid)] = {"until": until}
+
+    return result
+
+
+def set_manual_green(chat_id: int, uid: int, until_iso: str = ""):
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    entries = group.get("manual_green", {})
+    if not isinstance(entries, dict):
+        entries = {}
+    entries[str(uid)] = {"until": (until_iso or "").strip()}
+    group["manual_green"] = entries
+    _save_all(data)
+
+
+def remove_manual_green(chat_id: int, uid: int):
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    entries = group.get("manual_green", {})
+    if not isinstance(entries, dict):
+        return
+    if str(uid) in entries:
+        del entries[str(uid)]
+        group["manual_green"] = entries
+        _save_all(data)
+
+
+def is_manual_green_today(chat_id: int, uid: int, today: date | None = None) -> bool:
+    entries = get_manual_green(chat_id)
+    entry = entries.get(str(uid))
+    if entry is None:
+        return False
+
+    until = str(entry.get("until", "") or "").strip()
+    if not until:
+        return True
+
+    try:
+        return (today or date.today()) <= date.fromisoformat(until)
+    except Exception:
+        return False
+
+
+def cleanup_expired_manual_green(chat_id: int, today: date | None = None) -> list[int]:
+    data = _load_all()
+    group = _get_group(data, chat_id)
+    entries = group.get("manual_green", {})
+    if not isinstance(entries, dict):
+        group["manual_green"] = {}
+        _save_all(data)
+        return []
+
+    current_day = today or date.today()
+    expired: list[int] = []
+    changed = False
+
+    for key, entry in list(entries.items()):
+        if isinstance(entry, dict):
+            until = str(entry.get("until", "") or "").strip()
+        else:
+            until = str(entry or "").strip()
+
+        if not until:
+            continue
+
+        try:
+            parsed = date.fromisoformat(until)
+        except Exception:
+            del entries[key]
+            changed = True
+            _append_int(expired, key)
+            continue
+
+        if parsed < current_day:
+            del entries[key]
+            changed = True
+            _append_int(expired, key)
+
+    if changed:
+        group["manual_green"] = entries
+        _save_all(data)
+
+    return expired
+
+
+def _append_int(values: list[int], raw_value: str):
+    try:
+        values.append(int(raw_value))
+    except ValueError:
+        pass
 
 
 def mark_excused(chat_id: int, uid: int):
