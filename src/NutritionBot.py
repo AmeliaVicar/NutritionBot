@@ -12,10 +12,10 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import (
     Message,
-    ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
     CallbackQuery,
     FSInputFile,
+    ReplyKeyboardRemove,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -886,14 +886,11 @@ def find_row_by_fio_in_rows(rows: list[list], fio: str) -> int | None:
 # -------------------------
 # КНОПКИ
 # -------------------------
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    keyboard=[[
-        KeyboardButton(text="📌 Правила питания"),
-        KeyboardButton(text="📋 Меню"),
-        KeyboardButton(text="📝 Правила оформления отчета")
-    ]],
-    resize_keyboard=True
-)
+MAIN_INLINE = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📌 Правила питания", callback_data="main:rules")],
+    [InlineKeyboardButton(text="📋 Меню", callback_data="main:menu")],
+    [InlineKeyboardButton(text="📝 Правила оформления отчета", callback_data="main:report_rules")],
+])
 
 MENU_INLINE = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text=str(i), callback_data=f"menu:{i}") for i in range(1, 8)],
@@ -927,74 +924,101 @@ def find_asset(filename: str) -> str | None:
     path = os.path.join(ASSETS_DIR, filename)
     return path if os.path.exists(path) else None
 
+
+RULES_TEXT = (
+    "📌<b>Правила приёма пищи</b>\n"
+    "• <b>Завтрак</b>🥞 — в первый час после пробуждения\n"
+    "• <b>Первый перекус</b>🍎 — спустя 2–4 часа после завтрака (до 11:00)\n"
+    "• <b>Обед</b>🍝 — до 14:00\n"
+    "• <b>Второй перекус</b>🥛 — до 16:00\n"
+    "• <b>Ужин</b> — до 20:00"
+)
+
+REPORT_RULES_TEXT = (
+    "📌 <b>ПРАВИЛА ОТЧЁТОВ В ЧАТЕ</b>\n"
+    "Пожалуйста, соблюдаем формат — бот работает автоматически 🤖\n"
+    "Если формат нарушен, отметка может не засчитаться.\n"
+    "\n"
+    "📝 <b>ОБЩЕЕ ПРАВИЛО</b>\n"
+    "➡️ Один приём пищи / вес = одно сообщение\n"
+    "➡️ Не объединяем несколько приёмов пищи в одном тексте\n"
+    "\n"
+    "🍽 <b>КАК ПИСАТЬ ПРИЁМЫ ПИЩИ</b>\n"
+    "Сообщение начинаем с Фамилия (можно с именем), дальше — приём пищи:\n"
+    "Примеры:\n"
+    "Сунко завтрак\n"
+    "Сунко перекус 1\n"
+    "Сунко обед\n"
+    "Сунко перекус 2\n"
+    "Сунко ужин\n"
+    "\n"
+    "⚠️ <b>В первый день желательно писать Фамилия Имя, чтобы бот привязал вас к таблице.</b>\n"
+    "\n"
+    "❌ <b>ЕСЛИ ПРИЁМА ПИЩИ НЕ БУДЕТ</b>\n"
+    "Пишем “не будет” или “без”:\n"
+    "Сунко обед не будет\n"
+    "Сунко без ужина\n"
+    "Сунко второго перекуса не будет\n"
+    "\n"
+    "➡️ В таблице ставится минус (-)\n"
+    "\n"
+    "⚖️ <b>ВЕС</b>\n"
+    "Любое сообщение про вес пишем обязательно со словом “вес”, иначе бот его не обработает:\n"
+    "Сунко вес 80.0\n"
+    "\n"
+    "➡️ Пишем только актуальный вес, разница будет просчитана автоматически\n"
+    "\n"
+    "🌿 <b>ЕСЛИ СЕГОДНЯ БЕЗ ОТЧЁТОВ</b>\n"
+    "Сегодня без отчётов\n"
+    "Уехала, без отчётов\n"
+    "Уехала до 14 января\n"
+    "\n"
+    "➡️ В таблице строка будет зелёной"
+)
+
+
+async def remove_old_reply_keyboard(m: Message):
+    await m.answer("Убрала старые кнопки из поля ввода.", reply_markup=ReplyKeyboardRemove())
+
+
 # -------------------------
 # /start + кнопки
 # -------------------------
-@dp.message(F.text == "/start")
+@dp.message(Command("start"))
 async def start(m: Message):
     print("CHAT_ID =", m.chat.id)
-    await m.answer("Ок, я на связи. Выбирай 👇", reply_markup=MAIN_KEYBOARD)
+    await remove_old_reply_keyboard(m)
+    await m.answer("Ок, я на связи. Выбирай 👇", reply_markup=MAIN_INLINE)
 
 @dp.message(F.text == "📌 Правила питания")
 async def rules(m: Message):
-    await m.answer(
-        "📌<b>Правила приёма пищи</b>\n"
-        "• <b>Завтрак</b>🥞 — в первый час после пробуждения\n"
-        "• <b>Первый перекус</b>🍎 — спустя 2–4 часа после завтрака (до 11:00)\n"
-        "• <b>Обед</b>🍝 — до 14:00\n"
-        "• <b>Второй перекус</b>🥛 — до 16:00\n"
-        "• <b>Ужин</b> — до 20:00",
-        reply_markup=MAIN_KEYBOARD
-    )
+    await remove_old_reply_keyboard(m)
+    await m.answer(RULES_TEXT, reply_markup=MAIN_INLINE)
+
+@dp.callback_query(F.data == "main:rules")
+async def rules_cb(cb: CallbackQuery):
+    await cb.message.answer(RULES_TEXT, reply_markup=MAIN_INLINE)
+    await cb.answer()
 
 @dp.message(F.text == "📋 Меню")
 async def menu(m: Message):
+    await remove_old_reply_keyboard(m)
     await m.answer("Выбери меню 👇", reply_markup=MENU_INLINE)
+
+@dp.callback_query(F.data == "main:menu")
+async def menu_cb(cb: CallbackQuery):
+    await cb.message.answer("Выбери меню 👇", reply_markup=MENU_INLINE)
+    await cb.answer()
 
 @dp.message(F.text == "📝 Правила оформления отчета")
 async def report_rules(m: Message):
-    await m.answer(
-        "📌 <b>ПРАВИЛА ОТЧЁТОВ В ЧАТЕ</b>\n"
-        "Пожалуйста, соблюдаем формат — бот работает автоматически 🤖\n"
-        "Если формат нарушен, отметка может не засчитаться.\n"
-        "\n"
-        "📝 <b>ОБЩЕЕ ПРАВИЛО</b>\n"
-        "➡️ Один приём пищи / вес = одно сообщение\n"
-        "➡️ Не объединяем несколько приёмов пищи в одном тексте\n"
-        "\n"
-        "🍽 <b>КАК ПИСАТЬ ПРИЁМЫ ПИЩИ</b>\n"
-        "Сообщение начинаем с Фамилия (можно с именем), дальше — приём пищи:\n"
-        "Примеры:\n"
-        "Сунко завтрак\n"
-        "Сунко перекус 1\n"
-        "Сунко обед\n"
-        "Сунко перекус 2\n"
-        "Сунко ужин\n"
-        "\n"
-        "⚠️ <b>В первый день желательно писать Фамилия Имя, чтобы бот привязал вас к таблице.</b>\n"
-        "\n"
-        "❌ <b>ЕСЛИ ПРИЁМА ПИЩИ НЕ БУДЕТ</b>\n"
-        "Пишем “не будет” или “без”:\n"
-        "Сунко обед не будет\n"
-        "Сунко без ужина\n"
-        "Сунко второго перекуса не будет\n"
-        "\n"
-        "➡️ В таблице ставится минус (-)\n"
-        "\n"
-        "⚖️ <b>ВЕС</b>\n"
-        "Любое сообщение про вес пишем обязательно со словом “вес”, иначе бот его не обработает:\n"
-        "Сунко вес 80.0\n"
-        "\n"
-        "➡️ Пишем только актуальный вес, разница будет просчитана автоматически\n"
-        "\n"
-        "🌿 <b>ЕСЛИ СЕГОДНЯ БЕЗ ОТЧЁТОВ</b>\n"
-        "Сегодня без отчётов\n"
-        "Уехала, без отчётов\n"
-        "Уехала до 14 января\n"
-        "\n"
-        "➡️ В таблице строка будет зелёной",
-        reply_markup=MAIN_KEYBOARD
-    )
+    await remove_old_reply_keyboard(m)
+    await m.answer(REPORT_RULES_TEXT, reply_markup=MAIN_INLINE)
+
+@dp.callback_query(F.data == "main:report_rules")
+async def report_rules_cb(cb: CallbackQuery):
+    await cb.message.answer(REPORT_RULES_TEXT, reply_markup=MAIN_INLINE)
+    await cb.answer()
 
 @dp.callback_query(F.data.startswith("menu:"))
 async def menu_pick(cb: CallbackQuery):
@@ -1014,7 +1038,7 @@ async def menu_pick(cb: CallbackQuery):
     await cb.message.answer_photo(
         FSInputFile(path),
         caption=f"📋 Меню: {key}",
-        reply_markup=MAIN_KEYBOARD
+        reply_markup=MAIN_INLINE
     )
     await cb.answer()
 
@@ -1334,7 +1358,8 @@ async def report(chat_id: int):
     await  bot.send_photo(
         chat_id,
         FSInputFile(jpg_path),
-        caption = "Отчет за день"
+        caption = "Отчет за день",
+        reply_markup=ReplyKeyboardRemove()
     )
 # -------------------------
 # Пинг по обеду: только тем, у кого реально пусто
@@ -1387,7 +1412,7 @@ async def lunch_ping(chat_id: int):
         "Пожалуйста, отправьте отчёт по обеду 👇\n\n" +
         "\n".join(tags)
     )
-    await bot.send_message(chat_id, text)
+    await bot.send_message(chat_id, text, reply_markup=ReplyKeyboardRemove())
 
 # -------------------------
 # Запуск
