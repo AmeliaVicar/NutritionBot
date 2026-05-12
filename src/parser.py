@@ -77,13 +77,25 @@ WEIGHT_DELTA_RE = re.compile(
     re.IGNORECASE,
 )
 
+WEIGHT_WORD_RE = re.compile(r"\b(?:\u0432\u0435\u0441|\u0432\u0435\u0441\u0442)\b", re.IGNORECASE)
+
 SAME_WEIGHT_RE = re.compile(
-    r"\b(?:\u0432\u0435\u0441\s+(?:\u0442\u043e\u0442|\u0442\u0430\u043a\u043e\u0439)\s+\u0436\u0435|(?:\u0442\u043e\u0442|\u0442\u0430\u043a\u043e\u0439)\s+\u0436\u0435\s+\u0432\u0435\u0441)\b",
+    r"\b(?:(?:\u0432\u0435\u0441|\u0432\u0435\u0441\u0442)\s+(?:\u0442\u043e\u0442|\u0442\u0430\u043a\u043e\u0439)\s+\u0436\u0435|(?:\u0442\u043e\u0442|\u0442\u0430\u043a\u043e\u0439)\s+\u0436\u0435\s+(?:\u0432\u0435\u0441|\u0432\u0435\u0441\u0442))\b",
     re.IGNORECASE,
 )
 
 EXPLICIT_WEIGHT_RE = re.compile(
     r"(?<![\d.])(?P<value>\d{2,3}(?:\.\d{1,3})?)(?!\.\d)(?!\d)"
+)
+
+WEIGHT_VALUE_WITHOUT_WORD_RE = re.compile(
+    r"^\s*(?:[a-z\u0430-\u044f\u0451_.-]+\s*,?\s*){1,4}(?P<value>\d{2,3}(?:\.\d{1,3})?)\s*$",
+    re.IGNORECASE,
+)
+
+WEIGHT_DELTA_WITHOUT_WORD_RE = re.compile(
+    r"^\s*(?:[a-z\u0430-\u044f\u0451_.-]+\s*,?\s*){1,4}(?P<sign>\u043f\u043b\u044e\u0441|\u043c\u0438\u043d\u0443\u0441|[+-])\s*(?P<value>\d+(?:\.\d+)?)\s*(?:\u0433\u0440\b|\u0433\u0440\u0430\u043c\w*\b)?\s*$",
+    re.IGNORECASE,
 )
 
 NON_WEIGHT_NUMBER_SUFFIX_RE = re.compile(
@@ -150,6 +162,74 @@ def _reported_hour(text: str) -> Optional[int]:
 def _has_weight_meta(text: str) -> bool:
     t = normalize(text)
     return any(word in t for word in WEIGHT_META_WORDS)
+
+
+def _has_weight_word(text: str) -> bool:
+    return bool(WEIGHT_WORD_RE.search(normalize_weight_text(text)))
+
+
+def _has_meal_word(text: str) -> bool:
+    return bool(MEAL_MATCH_RE.search(normalize(text)))
+
+
+def _parse_weight_value_without_word(text: str) -> Optional[float]:
+    t = normalize_weight_text(text)
+    match = WEIGHT_VALUE_WITHOUT_WORD_RE.fullmatch(t)
+    if not match:
+        return None
+
+    raw_value = match.group("value")
+    if _looks_like_date_fragment(raw_value):
+        return None
+
+    value = float(raw_value)
+    return round(value, 3) if 30 <= value <= 200 else None
+
+
+def _parse_weight_delta_without_word(text: str) -> Optional[float]:
+    t = normalize_weight_text(text)
+    match = WEIGHT_DELTA_WITHOUT_WORD_RE.fullmatch(t)
+    if not match:
+        return None
+
+    raw_value = match.group("value")
+    value = float(raw_value)
+    tail = t[match.end("value"):match.end("value") + 12]
+    has_gram_suffix = bool(re.match(r"^\s*(?:\u0433\u0440\b|\u0433\u0440\u0430\u043c\w*\b)", tail))
+
+    if has_gram_suffix:
+        value = value / 1000
+    elif "." not in raw_value:
+        if 50 <= abs(value) <= 1500:
+            value = value / 1000
+        else:
+            return None
+
+    sign = -1 if match.group("sign") in ("-", "\u043c\u0438\u043d\u0443\u0441") else 1
+    delta = round(sign * value, 3)
+    if abs(delta) > 5:
+        return None
+    return delta
+
+
+def needs_weight_value_warning(text: str) -> bool:
+    t = normalize_weight_text(text)
+    if not t or "?" in t or _has_weight_meta(t):
+        return False
+    if not _has_weight_word(t):
+        return False
+    if parse_weight_delta(t) is not None or parse_explicit_weight(t) is not None:
+        return False
+    return not re.search(r"\d", t) and not SAME_WEIGHT_RE.search(t)
+
+
+def needs_weight_keyword_warning(text: str) -> bool:
+    t = normalize_weight_text(text)
+    if not t or "?" in t or _has_weight_meta(t):
+        return False
+    if _has_weight_word(t) or _has_meal_word(t):
+        return False
+    return _parse_weight_value_without_word(t) is not None or _parse_weight_delta_without_word(t) is not None
 
 
 def looks_like_meal_report(text: str) -> bool:
@@ -266,7 +346,7 @@ def parse_weight_delta(text: str) -> Optional[float]:
     t = normalize_weight_text(text)
     if _has_weight_meta(t):
         return None
-    if not re.search(r"\b\u0432\u0435\u0441\b", t):
+    if not _has_weight_word(t):
         return None
     if re.fullmatch(r"0(?:\.0+)?", t):
         return 0.0
@@ -310,7 +390,7 @@ def parse_explicit_weight(text: str) -> Optional[float]:
         return None
     if any(re.search(pattern, t) for pattern in list(MEAL_WORD_PATTERNS.values()) + [r"\b\u043f\u0435\u0440\u0435\u043a\u0443\u0441\w*\b"]):
         return None
-    if not re.search(r"\b\u0432\u0435\u0441\b", t):
+    if not _has_weight_word(t):
         return None
 
     delta_matches = list(WEIGHT_DELTA_RE.finditer(t))

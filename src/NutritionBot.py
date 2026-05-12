@@ -37,6 +37,8 @@ from parser import (
     late_message,
     looks_like_meal_report,
     looks_like_weight_report,
+    needs_weight_keyword_warning,
+    needs_weight_value_warning,
     extract_meal_marks,
     parse_explicit_weight,
     parse_sheet_weight,
@@ -1064,6 +1066,14 @@ async def report_handler(m: Message):
         return
 
     remember_start_candidate(m, text, msg_dt)
+
+    if needs_weight_value_warning(text):
+        await m.reply("⚠️ Вес нужно писать с цифрой в этом же сообщении: <code>Сунко вес 80</code>.")
+        return
+
+    if needs_weight_keyword_warning(text):
+        await m.reply("⚠️ Не забывай ключевое слово <b>вес</b>: <code>Сунко вес 80</code>.")
+        return
 
     if not message_is_report(text):
         return

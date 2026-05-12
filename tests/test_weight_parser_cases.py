@@ -5,6 +5,7 @@ sys.path.insert(0, r"C:\NutritionBot\src")
 
 from parser import (
     looks_like_weight_report,
+    needs_weight_value_warning,
     parse_absolute_weight,
     parse_explicit_weight,
     parse_weight_delta,
@@ -20,6 +21,19 @@ class WeightParserCasesTests(unittest.TestCase):
         self.assertEqual(parse_explicit_weight("фото не грузится, вес 75,6"), 75.6)
         self.assertTrue(looks_like_weight_report("Соколова вес 75,6"))
         self.assertTrue(looks_like_weight_report("фото не грузится, вес 75,6"))
+
+    def test_vest_is_accepted_as_weight_word(self):
+        self.assertEqual(parse_explicit_weight("Сунко вест 80"), 80.0)
+        self.assertTrue(looks_like_weight_report("Сунко вест 80"))
+        self.assertEqual(parse_weight_delta("Сунко вест минус 300"), -0.3)
+        self.assertEqual(parse_weight_delta("Сунко вест тот же"), 0.0)
+
+    def test_weight_word_without_value_needs_warning(self):
+        self.assertTrue(needs_weight_value_warning("Сунко вес"))
+        self.assertTrue(needs_weight_value_warning("Сунко вест"))
+        self.assertFalse(needs_weight_value_warning("Сунко вес 80"))
+        self.assertFalse(needs_weight_value_warning("Сунко вест минус 300"))
+        self.assertFalse(needs_weight_value_warning("Сунко вес тот же"))
 
     def test_explicit_weight_wins_in_combined_message(self):
         text = "Вес 75,6, минус 300 от веса на 14.03"

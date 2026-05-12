@@ -3,7 +3,12 @@ import unittest
 
 sys.path.insert(0, r"C:\NutritionBot\src")
 
-from parser import looks_like_weight_report, parse_explicit_weight, parse_weight_delta
+from parser import (
+    looks_like_weight_report,
+    needs_weight_keyword_warning,
+    parse_explicit_weight,
+    parse_weight_delta,
+)
 
 
 class WeightFreeformMessagesTests(unittest.TestCase):
@@ -24,6 +29,21 @@ class WeightFreeformMessagesTests(unittest.TestCase):
                 self.assertIsNone(parse_explicit_weight(text))
                 self.assertIsNone(parse_weight_delta(text))
 
+    def test_absolute_weight_without_weight_word_needs_warning(self):
+        cases = [
+            "Сунко 80",
+            "Сунко 80.0",
+            "Сунко 80,0",
+            "Сунко сегодня 79,7",
+            "sunco 80",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertTrue(needs_weight_keyword_warning(text))
+                self.assertFalse(looks_like_weight_report(text))
+                self.assertIsNone(parse_explicit_weight(text))
+
     def test_weight_delta_without_weight_word_is_ignored(self):
         cases = [
             "Сунко минус 300",
@@ -42,6 +62,20 @@ class WeightFreeformMessagesTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertFalse(looks_like_weight_report(text))
                 self.assertIsNone(parse_explicit_weight(text))
+                self.assertIsNone(parse_weight_delta(text))
+
+    def test_weight_delta_without_weight_word_needs_warning(self):
+        cases = [
+            "Сунко минус 300",
+            "Сунко плюс 200",
+            "Сунко -300",
+            "Сунко +0.2",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertTrue(needs_weight_keyword_warning(text))
+                self.assertFalse(looks_like_weight_report(text))
                 self.assertIsNone(parse_weight_delta(text))
 
     def test_weight_messages_with_weight_word_still_work(self):

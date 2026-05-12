@@ -68,7 +68,7 @@ INSTRUCTION_RE = re.compile(
     re.IGNORECASE,
 )
 REPORT_WORD_RE = re.compile(
-    r"\b(?:завтрак\w*|обед\w*|ужин\w*|перекус\w*|вес)\b",
+    r"\b(?:завтрак\w*|обед\w*|ужин\w*|перекус\w*|вес|вест)\b",
     re.IGNORECASE,
 )
 
