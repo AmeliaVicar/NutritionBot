@@ -206,16 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-service_account.json
-.env
-state.json
-.venv/
-__pycache__/
-out/
-.idea/
-*.pyc
-
-# Python
+# Python runtime artifacts
 __pycache__/
 *.pyc
 *.pyo
@@ -224,10 +215,18 @@ __pycache__/
 # Local runtime files
 src/config.py
 src/state.json
+state.json
 
-# Secrets
+# Secrets and credentials
 .env
+.env.*
+!.env.example
 service_account.json
+*.service-account.json
+*credentials*.json
+*secret*.json
+*.pem
+*.key
 
 # Logs / temp
 logs/
