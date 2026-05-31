@@ -898,6 +898,7 @@ MENU_INLINE = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🥞 сырники", callback_data="menu:syrniki"),
         InlineKeyboardButton(text="🫓 лаваш", callback_data="menu:lavash"),
         InlineKeyboardButton(text="🍪 печенье", callback_data="menu:cookie"),
+        InlineKeyboardButton(text="🌶️ перец", callback_data="menu:pepper"),
         # InlineKeyboardButton(text="🍇 виноград", callback_data="menu:grape"),
         # InlineKeyboardButton(text="🍌 банан", callback_data="menu:banana"),
         # InlineKeyboardButton(text="🥬 свекла", callback_data="menu:beet"),
@@ -918,6 +919,7 @@ MENU_FILES = {
     "syrniki": "сырники.jpg",
     "lavash": "Лаваш.jpg",
     "cookie": "Печенье.jpg",
+    "pepper": "перцы.jpg",
 }
 
 def find_asset(filename: str) -> str | None:
