@@ -99,6 +99,12 @@ ASSETS_DIR = os.path.join(
 
 print("🔥 NEW VERSION WITH SYRNIKI AND FIXED WEIGHT 🔥")
 
+# Compatibility for servers that still have the old local ignored config.py.
+OLD_GROUP2_CHAT_ID = -5332746598
+NEW_GROUP2_CHAT_ID = -1004400128773
+if OLD_GROUP2_CHAT_ID in GROUPS and NEW_GROUP2_CHAT_ID not in GROUPS:
+    GROUPS[NEW_GROUP2_CHAT_ID] = GROUPS.pop(OLD_GROUP2_CHAT_ID)
+
 # -------------------------
 # Таблица (важно: совпадает с parser.MEAL_COL, но тут оставим отдельно)
 # A surname, B weight, C diff, D breakfast, E snack1, F lunch, G snack2, H dinner, ... J uid
